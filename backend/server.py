@@ -365,6 +365,8 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str) -> None:
             input_audio_transcription=types.AudioTranscriptionConfig(),
             output_audio_transcription=types.AudioTranscriptionConfig(),
             session_resumption=types.SessionResumptionConfig(),
+            proactivity=types.ProactivityConfig(proactive_audio=True),
+            enable_affective_dialog=True,
         )
         logger.info(f"Model Config: {model_name} (native audio, BIDI mode)")
     else:
