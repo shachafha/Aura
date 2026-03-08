@@ -17,7 +17,7 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         // Backend URL — update after Cloud Run deployment
-        buildConfigField("String", "BACKEND_URL", "\"http://10.0.2.2:8080/\"")
+        buildConfigField("String", "BACKEND_URL", "\"http://10.206.22.111:8080/\"")
 
         // Gemini API key (kept as fallback for direct calls)
         val geminiApiKey = project.findProperty("GEMINI_API_KEY") as? String ?: ""
