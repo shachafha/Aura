@@ -1,15 +1,19 @@
 package com.example.aura.ui.live
 
-import android.graphics.Bitmap
+import android.content.ContentValues
 import android.graphics.BitmapFactory
-import android.graphics.Matrix
 import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
+import android.util.Log
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
-import androidx.camera.core.ImageAnalysis
-import androidx.camera.core.ImageProxy
+import androidx.camera.core.ImageCapture
+import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
@@ -41,8 +45,8 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.FlipCameraAndroid
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.PhotoLibrary
@@ -55,8 +59,12 @@ import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -71,23 +79,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
-/**
- * The main live stylist screen — camera-first, voice-driven.
- *
- * Features:
- * - Full-screen camera preview (always live)
- * - "Hey Aura" wake word detection (always on)
- * - Auto-stop after 5 seconds of silence
- * - Gallery photo picker for analyzing past outfits
- * - Manual mic toggle as fallback
- */
 @Composable
 fun LiveStylistScreen(
     viewModel: LiveStylistViewModel,
@@ -96,84 +94,116 @@ fun LiveStylistScreen(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
-    // State
+    // ─── Collect ViewModel state ────────────────────────
     val auraState by viewModel.auraState.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     val isListening by viewModel.isListening.collectAsState()
     val isSpeaking by viewModel.isSpeaking.collectAsState()
     val partialText by viewModel.partialText.collectAsState()
     val userTranscription by viewModel.userTranscription.collectAsState()
-    val isConnected by viewModel.isConnected.collectAsState()
+    val captureTrigger by viewModel.captureTrigger.collectAsState()
 
-    // Camera
+    // ─── Camera ─────────────────────────────────────────
     var useFrontCamera by remember { mutableStateOf(true) }
-    val cameraExecutor: ExecutorService = remember { Executors.newSingleThreadExecutor() }
+    val imageCapture = remember { ImageCapture.Builder().build() }
 
-    // Image analyzer — always streams when WebSocket is connected
-    val imageAnalyzer = remember {
-        ImageAnalysis.Builder()
-            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-            .build()
-            .also {
-                it.setAnalyzer(cameraExecutor, com.example.aura.data.live.LiveImageAnalyzer { base64 ->
-                    viewModel.sendCameraFrame(base64)
-                })
+    // Track camera flip to force rebind
+    var cameraFlipKey by remember { mutableIntStateOf(0) }
+
+    // ─── Voice-triggered photo capture ──────────────────
+    LaunchedEffect(captureTrigger) {
+        if (captureTrigger > 0) {
+            Log.d("AuraDemo", "📸 captureTrigger=$captureTrigger → taking photo")
+            val contentValues = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME,
+                    "Aura_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}")
+                put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    put(MediaStore.Images.Media.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/Aura")
+                }
             }
+
+            val outputOptions = ImageCapture.OutputFileOptions.Builder(
+                context.contentResolver,
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                contentValues
+            ).build()
+
+            imageCapture.takePicture(
+                outputOptions,
+                ContextCompat.getMainExecutor(context),
+                object : ImageCapture.OnImageSavedCallback {
+                    override fun onImageSaved(output: ImageCapture.OutputFileResults) {
+                        Toast.makeText(context, "📸 Photo saved!", Toast.LENGTH_SHORT).show()
+                    }
+                    override fun onError(exc: ImageCaptureException) {
+                        Log.e("AuraDemo", "Photo capture failed: ${exc.message}")
+                        Toast.makeText(context, "Photo capture failed", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            )
+        }
     }
 
-    // Gallery photo picker
+    // ─── Gallery photo picker ───────────────────────────
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri: Uri? ->
         uri?.let {
             try {
-                val inputStream = context.contentResolver.openInputStream(it)
-                val bitmap = BitmapFactory.decodeStream(inputStream)
-                inputStream?.close()
-                if (bitmap != null) {
-                    viewModel.analyzeGalleryImage(bitmap)
-                }
+                val stream = context.contentResolver.openInputStream(it)
+                val bitmap = BitmapFactory.decodeStream(stream)
+                stream?.close()
+                if (bitmap != null) viewModel.analyzeGalleryImage(bitmap)
             } catch (e: Exception) {
-                e.printStackTrace()
+                Log.e("AuraDemo", "Gallery error", e)
             }
         }
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        // ─── Full-screen Camera Preview ─────────────────
-        AndroidView(
-            factory = { ctx ->
-                val previewView = PreviewView(ctx)
-                val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
 
-                cameraProviderFuture.addListener({
-                    val cameraProvider = cameraProviderFuture.get()
-                    val preview = Preview.Builder().build().also {
-                        it.surfaceProvider = previewView.surfaceProvider
-                    }
+        // ═══ Camera Preview ═════════════════════════════
+        // key(cameraFlipKey) forces the AndroidView to be recreated when flipping.
+        // This properly rebinds Preview + ImageCapture to the new camera.
+        key(cameraFlipKey) {
+            AndroidView(
+                factory = { ctx ->
+                    val previewView = PreviewView(ctx)
+                    val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
 
-                    val cameraSelector = if (useFrontCamera)
-                        CameraSelector.DEFAULT_FRONT_CAMERA
-                    else
-                        CameraSelector.DEFAULT_BACK_CAMERA
+                    cameraProviderFuture.addListener({
+                        try {
+                            val cameraProvider = cameraProviderFuture.get()
+                            val preview = Preview.Builder().build().apply {
+                                surfaceProvider = previewView.surfaceProvider
+                            }
 
-                    try {
-                        cameraProvider.unbindAll()
-                        cameraProvider.bindToLifecycle(
-                            lifecycleOwner,
-                            cameraSelector,
-                            preview,
-                            imageAnalyzer
-                        )
-                    } catch (_: Exception) { }
-                }, ContextCompat.getMainExecutor(ctx))
+                            val selector = if (useFrontCamera)
+                                CameraSelector.DEFAULT_FRONT_CAMERA
+                            else
+                                CameraSelector.DEFAULT_BACK_CAMERA
 
-                previewView
-            },
-            modifier = Modifier.fillMaxSize()
-        )
+                            cameraProvider.unbindAll()
+                            cameraProvider.bindToLifecycle(
+                                lifecycleOwner,
+                                selector,
+                                preview,
+                                imageCapture
+                            )
+                            Log.d("AuraDemo", "Camera bound (front=$useFrontCamera)")
+                        } catch (e: Exception) {
+                            Log.e("AuraDemo", "Camera bind failed", e)
+                        }
+                    }, ContextCompat.getMainExecutor(ctx))
 
-        // ─── Dark gradient overlay at bottom ────────────
+                    previewView
+                },
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+
+        // ═══ Bottom Gradient ════════════════════════════
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -181,15 +211,12 @@ fun LiveStylistScreen(
                 .align(Alignment.BottomCenter)
                 .background(
                     Brush.verticalGradient(
-                        colors = listOf(
-                            Color.Transparent,
-                            Color.Black.copy(alpha = 0.8f)
-                        )
+                        colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.8f))
                     )
                 )
         )
 
-        // ─── Top Bar ────────────────────────────────────
+        // ═══ Top Bar ════════════════════════════════════
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -198,6 +225,7 @@ fun LiveStylistScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
+            // Logo
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
                     imageVector = Icons.Default.AutoAwesome,
@@ -205,27 +233,26 @@ fun LiveStylistScreen(
                     tint = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.size(24.dp)
                 )
-                Spacer(modifier = Modifier.width(8.dp))
+                Spacer(Modifier.width(8.dp))
                 Text(
                     text = "Aura",
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold,
                     color = Color.White
                 )
-                // Connection indicator
-                if (isConnected) {
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Box(
-                        modifier = Modifier
-                            .size(8.dp)
-                            .clip(CircleShape)
-                            .background(Color(0xFF4CAF50))
-                    )
-                }
+                Spacer(Modifier.width(8.dp))
+                // Green dot (always on in demo mode)
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xFF4CAF50))
+                )
             }
 
+            // Action buttons
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                // Gallery button
+                // Gallery
                 IconButton(
                     onClick = {
                         photoPickerLauncher.launch(
@@ -236,44 +263,35 @@ fun LiveStylistScreen(
                         containerColor = Color.White.copy(alpha = 0.15f)
                     )
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.PhotoLibrary,
-                        contentDescription = "Pick from gallery",
-                        tint = Color.White
-                    )
+                    Icon(Icons.Default.PhotoLibrary, "Gallery", tint = Color.White)
                 }
 
-                // Camera flip button
+                // Flip camera
                 IconButton(
-                    onClick = { useFrontCamera = !useFrontCamera },
+                    onClick = {
+                        useFrontCamera = !useFrontCamera
+                        cameraFlipKey++
+                    },
                     colors = IconButtonDefaults.iconButtonColors(
                         containerColor = Color.White.copy(alpha = 0.15f)
                     )
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.FlipCameraAndroid,
-                        contentDescription = "Flip camera",
-                        tint = Color.White
-                    )
+                    Icon(Icons.Default.FlipCameraAndroid, "Flip camera", tint = Color.White)
                 }
 
-                // View Chat transcript button
+                // Transcript
                 IconButton(
                     onClick = onViewTranscript,
                     colors = IconButtonDefaults.iconButtonColors(
                         containerColor = Color.White.copy(alpha = 0.15f)
                     )
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Chat,
-                        contentDescription = "View transcript",
-                        tint = Color.White
-                    )
+                    Icon(Icons.AutoMirrored.Filled.Chat, "Transcript", tint = Color.White)
                 }
             }
         }
 
-        // ─── Bottom Controls ────────────────────────────
+        // ═══ Bottom Controls ════════════════════════════
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -282,80 +300,60 @@ fun LiveStylistScreen(
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             // State label
-            AnimatedVisibility(
-                visible = true,
-                enter = fadeIn(),
-                exit = fadeOut()
-            ) {
-                Text(
-                    text = when (auraState) {
-                        LiveStylistViewModel.AuraState.PASSIVE_LISTENING -> "✨ Say \"Hey Aura\" to start"
-                        LiveStylistViewModel.AuraState.ACTIVE_LISTENING -> "🎤 Aura is listening..."
-                        LiveStylistViewModel.AuraState.PROCESSING -> "💭 Aura is thinking..."
-                        LiveStylistViewModel.AuraState.SPEAKING -> "💬 Aura is speaking..."
-                    },
-                    style = MaterialTheme.typography.labelLarge,
-                    color = when (auraState) {
-                        LiveStylistViewModel.AuraState.PASSIVE_LISTENING -> Color.White.copy(alpha = 0.6f)
-                        LiveStylistViewModel.AuraState.ACTIVE_LISTENING -> Color(0xFFFF5252) // Red
-                        LiveStylistViewModel.AuraState.PROCESSING -> Color(0xFFFFD740) // Gold
-                        LiveStylistViewModel.AuraState.SPEAKING -> Color(0xFF69F0AE) // Green
-                    },
-                    modifier = Modifier.padding(bottom = 8.dp)
-                )
-            }
+            Text(
+                text = when (auraState) {
+                    LiveStylistViewModel.AuraState.PASSIVE_LISTENING -> "✨ Say \"Hey Aura\" to start"
+                    LiveStylistViewModel.AuraState.ACTIVE_LISTENING -> "🎤 Listening..."
+                    LiveStylistViewModel.AuraState.PROCESSING -> "💭 Thinking..."
+                    LiveStylistViewModel.AuraState.SPEAKING -> "💬 Aura is speaking..."
+                },
+                style = MaterialTheme.typography.labelLarge,
+                color = when (auraState) {
+                    LiveStylistViewModel.AuraState.PASSIVE_LISTENING -> Color.White.copy(alpha = 0.6f)
+                    LiveStylistViewModel.AuraState.ACTIVE_LISTENING -> Color(0xFFFF5252)
+                    LiveStylistViewModel.AuraState.PROCESSING -> Color(0xFFFFD740)
+                    LiveStylistViewModel.AuraState.SPEAKING -> Color(0xFF69F0AE)
+                },
+                modifier = Modifier.padding(bottom = 8.dp)
+            )
 
-            // User speech bubble (what you're saying — live)
+            // User speech bubble
             AnimatedVisibility(
                 visible = isListening && userTranscription.isNotBlank(),
                 enter = fadeIn() + slideInVertically { it / 2 },
                 exit = fadeOut() + slideOutVertically { it / 2 }
             ) {
-                TranscriptBubble(
-                    message = "🎤 $userTranscription",
-                    isAura = false
-                )
+                TranscriptBubble("🎤 $userTranscription", isAura = false)
             }
 
-            // AI response bubble (what Aura is saying — live)
+            // AI response bubble
             AnimatedVisibility(
-                visible = !isListening && partialText.isNotBlank(),
+                visible = (isSpeaking || auraState == LiveStylistViewModel.AuraState.SPEAKING) && partialText.isNotBlank(),
                 enter = fadeIn() + slideInVertically { it / 2 },
                 exit = fadeOut() + slideOutVertically { it / 2 }
             ) {
-                TranscriptBubble(
-                    message = partialText,
-                    isAura = true
-                )
+                TranscriptBubble(partialText, isAura = true)
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(Modifier.height(16.dp))
 
-            // ── Live Voice & Vision Toggle (fallback for manual control) ──
+            // Mic button
             MicButton(
                 isListening = isListening,
                 isSpeaking = isSpeaking,
                 isLoading = isLoading,
                 onToggle = {
-                    if (isListening) {
-                        viewModel.stopVoiceInput()
-                    } else {
-                        viewModel.startVoiceInput()
-                    }
+                    if (isListening) viewModel.stopVoiceInput() else viewModel.startVoiceInput()
                 }
             )
         }
     }
 }
 
-/**
- * Floating transcript bubble showing the last AI message or live speech.
- */
+// ═══ Composables ════════════════════════════════════════════
+
 @Composable
-private fun TranscriptBubble(
-    message: String,
-    isAura: Boolean
-) {
+private fun TranscriptBubble(message: String, isAura: Boolean) {
     Box(
         modifier = Modifier
             .padding(horizontal = 24.dp)
@@ -377,18 +375,14 @@ private fun TranscriptBubble(
         Text(
             text = message,
             style = MaterialTheme.typography.bodyMedium,
-            color = if (isAura) MaterialTheme.colorScheme.onSurfaceVariant
-            else Color.White,
+            color = if (isAura) MaterialTheme.colorScheme.onSurfaceVariant else Color.White,
             textAlign = TextAlign.Start,
-            maxLines = 4,
+            maxLines = 5,
             overflow = TextOverflow.Ellipsis
         )
     }
 }
 
-/**
- * Mic button — pulsing animation when listening, gold when idle.
- */
 @Composable
 private fun MicButton(
     isListening: Boolean,
@@ -396,46 +390,44 @@ private fun MicButton(
     isLoading: Boolean,
     onToggle: () -> Unit
 ) {
-    val infiniteTransition = rememberInfiniteTransition(label = "mic_pulse")
-    val pulseScale by infiniteTransition.animateFloat(
+    val transition = rememberInfiniteTransition(label = "pulse")
+    val pulseScale by transition.animateFloat(
         initialValue = 1f,
         targetValue = if (isListening) 1.3f else 1f,
         animationSpec = infiniteRepeatable(tween(500), RepeatMode.Reverse),
-        label = "mic_scale"
+        label = "scale"
     )
 
-    // Outer ripple when listening
-    if (isListening) {
-        Box(
-            modifier = Modifier
-                .size(100.dp)
-                .scale(pulseScale)
-                .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.error.copy(alpha = 0.15f))
-        )
-    }
+    Box(contentAlignment = Alignment.Center) {
+        if (isListening) {
+            Box(
+                modifier = Modifier
+                    .size(100.dp)
+                    .scale(pulseScale)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.error.copy(alpha = 0.15f))
+            )
+        }
 
-    FloatingActionButton(
-        onClick = { if (!isLoading) onToggle() },
-        modifier = Modifier
-            .size(72.dp)
-            .then(if (isListening) Modifier.scale(pulseScale * 0.8f) else Modifier),
-        shape = CircleShape,
-        containerColor = when {
-            isListening -> MaterialTheme.colorScheme.error
-            isSpeaking -> MaterialTheme.colorScheme.secondary
-            else -> MaterialTheme.colorScheme.primary
-        },
-        elevation = FloatingActionButtonDefaults.elevation(8.dp)
-    ) {
-        Icon(
-            imageVector = if (isListening) Icons.Default.Stop else Icons.Default.Mic,
-            contentDescription = if (isListening) "Stop listening" else "Start listening",
-            modifier = Modifier.size(32.dp),
-            tint = when {
-                isListening -> Color.White
-                else -> MaterialTheme.colorScheme.onPrimary
-            }
-        )
+        FloatingActionButton(
+            onClick = { if (!isLoading) onToggle() },
+            modifier = Modifier
+                .size(72.dp)
+                .then(if (isListening) Modifier.scale(pulseScale * 0.8f) else Modifier),
+            shape = CircleShape,
+            containerColor = when {
+                isListening -> MaterialTheme.colorScheme.error
+                isSpeaking -> MaterialTheme.colorScheme.secondary
+                else -> MaterialTheme.colorScheme.primary
+            },
+            elevation = FloatingActionButtonDefaults.elevation(8.dp)
+        ) {
+            Icon(
+                imageVector = if (isListening) Icons.Default.Stop else Icons.Default.Mic,
+                contentDescription = if (isListening) "Stop" else "Talk to Aura",
+                modifier = Modifier.size(32.dp),
+                tint = Color.White
+            )
+        }
     }
 }
