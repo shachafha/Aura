@@ -247,9 +247,11 @@ root_agent = Agent(
 # ─── Live Agent (native audio, for /ws bidi-streaming) ─────────────
 
 # Model for Gemini Live API — supports native audio I/O + tool calling
+# Verified available: gemini-2.5-flash-native-audio-latest,
+#                     gemini-2.5-flash-native-audio-preview-12-2025
 LIVE_MODEL_ID = os.getenv(
     "LIVE_MODEL_ID",
-    "gemini-live-2.5-flash-native-audio"
+    "gemini-2.5-flash-native-audio-latest"
 )
 
 AURA_LIVE_SYSTEM_INSTRUCTION = """

@@ -417,6 +417,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str) -> None:
                         data=audio_data,
                     )
                     live_request_queue.send_realtime(audio_blob)
+                    logger.debug(f"↑ Audio binary: {len(audio_data)} bytes")
 
                 # Handle text frames (JSON messages)
                 elif "text" in message:
@@ -426,16 +427,14 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str) -> None:
                     msg_type = json_message.get("type", "")
 
                     if msg_type == "text":
-                        # Text chat message
                         user_text = json_message.get("text", "")
-                        logger.info(f"User text: {user_text}")
+                        logger.info(f"↑ User text: {user_text}")
                         content = types.Content(
                             parts=[types.Part(text=user_text)]
                         )
                         live_request_queue.send_content(content)
 
                     elif msg_type == "audio":
-                        # Base64-encoded PCM audio
                         audio_data = base64.b64decode(
                             json_message.get("data", "")
                         )
@@ -444,9 +443,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str) -> None:
                             data=audio_data,
                         )
                         live_request_queue.send_realtime(audio_blob)
+                        logger.debug(f"↑ Audio JSON: {len(audio_data)} bytes")
 
                     elif msg_type == "image":
-                        # Base64-encoded image (camera frame)
                         image_data = base64.b64decode(
                             json_message.get("data", "")
                         )
@@ -456,10 +455,10 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str) -> None:
                             data=image_data,
                         )
                         live_request_queue.send_realtime(image_blob)
-                        logger.info("Received image frame")
+                        logger.info(f"↑ Image: {len(image_data)} bytes")
 
                     else:
-                        logger.warning(f"Unknown message type: {msg_type}")
+                        logger.warning(f"↑ Unknown type: {msg_type}")
 
         except WebSocketDisconnect:
             logger.info("Client disconnected (upstream)")
@@ -468,33 +467,46 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str) -> None:
 
     async def downstream_task() -> None:
         """Receives Events from run_live() → sends to WebSocket."""
-        logger.info("Connecting to Gemini Live API...")
-        async for event in live_runner.run_live(
-            user_id=user_id,
-            session_id=session_id,
-            live_request_queue=live_request_queue,
-            run_config=run_config,
-        ):
-            # Log tool calls
-            if hasattr(event, "tool_call") and event.tool_call:
-                details = str(event.tool_call.function_calls)
-                logger.info(f"[TOOL EXECUTION] {details}")
+        logger.info(f"Connecting to Gemini Live API (model={live_agent.model})...")
+        try:
+            async for event in live_runner.run_live(
+                user_id=user_id,
+                session_id=session_id,
+                live_request_queue=live_request_queue,
+                run_config=run_config,
+            ):
+                # Log what kind of event this is
+                event_dict = event.model_dump(exclude_none=True)
+                event_keys = list(event_dict.keys())
+                logger.info(f"↓ Event keys: {event_keys}")
 
-            # Log input transcription (what the user said via audio)
-            input_transcription = getattr(event, "input_audio_transcription", None)
-            if input_transcription and input_transcription.final_transcript:
-                logger.info(f"USER (audio): {input_transcription.final_transcript}")
+                # Log tool calls
+                if hasattr(event, "tool_call") and event.tool_call:
+                    details = str(event.tool_call.function_calls)
+                    logger.info(f"↓ [TOOL] {details}")
 
-            # Log output transcription (what the agent said)
-            output_transcription = getattr(event, "output_audio_transcription", None)
-            if output_transcription and output_transcription.final_transcript:
-                logger.info(f"AURA: {output_transcription.final_transcript}")
+                # Log input transcription (what the user said)
+                input_transcription = getattr(event, "input_audio_transcription", None)
+                if input_transcription:
+                    transcript = getattr(input_transcription, "final_transcript", "") or getattr(input_transcription, "transcript", "")
+                    if transcript:
+                        logger.info(f"↓ USER said: {transcript}")
 
-            # Send event to client as JSON
-            event_json = event.model_dump_json(
-                exclude_none=True, by_alias=True
-            )
-            await websocket.send_text(event_json)
+                # Log output transcription (what Aura said)
+                output_transcription = getattr(event, "output_audio_transcription", None)
+                if output_transcription:
+                    transcript = getattr(output_transcription, "final_transcript", "") or getattr(output_transcription, "transcript", "")
+                    if transcript:
+                        logger.info(f"↓ AURA said: {transcript}")
+
+                # Send event to client as JSON
+                event_json = event.model_dump_json(
+                    exclude_none=True, by_alias=True
+                )
+                await websocket.send_text(event_json)
+
+        except Exception as e:
+            logger.error(f"Downstream error: {e}", exc_info=True)
 
         logger.info("Gemini Live API connection closed.")
 

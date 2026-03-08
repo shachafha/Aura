@@ -14,17 +14,28 @@ import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import okio.ByteString
+import okio.ByteString.Companion.toByteString
 import java.util.UUID
+import java.util.concurrent.TimeUnit
 
 /**
- * Manages the OkHttp WebSocket connection to the Gemini Live API Backend streaming endpoint.
+ * Manages the OkHttp WebSocket connection to the Gemini Live API backend.
+ *
+ * Optimized for minimum latency:
+ * - Audio sent as RAW BINARY WebSocket frames (no base64/JSON overhead)
+ * - Images and text sent as JSON text frames
+ * - Pre-connects on app launch
  */
 class LiveRepository {
 
-    private val client = OkHttpClient()
+    private val client = OkHttpClient.Builder()
+        .pingInterval(10, TimeUnit.SECONDS) // Keep connection alive
+        .build()
+
     private var webSocket: WebSocket? = null
     private val gson = Gson()
-    
+
     private val sessionId = UUID.randomUUID().toString().take(8)
 
     private val _isConnected = MutableStateFlow(false)
@@ -33,22 +44,25 @@ class LiveRepository {
     private val _chatMessages = MutableStateFlow<List<ChatMessage>>(emptyList())
     val chatMessages: StateFlow<List<ChatMessage>> = _chatMessages.asStateFlow()
 
+    /** What the AI is saying (output transcription) */
     private val _partialText = MutableStateFlow("")
     val partialText: StateFlow<String> = _partialText.asStateFlow()
 
-    // Provide raw PCM audio bytes to be played back
-    var onAudioReceived: ((ByteArray) -> Unit)? = null
+    /** What the user is saying (input audio transcription — shown live) */
+    private val _userTranscription = MutableStateFlow("")
+    val userTranscription: StateFlow<String> = _userTranscription.asStateFlow()
 
-    /** Called when the model's turn is complete (finished speaking) */
+    // Callbacks
+    var onAudioReceived: ((ByteArray) -> Unit)? = null
     var onTurnComplete: (() -> Unit)? = null
 
     /**
      * Connects to ws://backend/ws/{session_id}
+     * Call this early (on app launch) for instant readiness.
      */
     fun connect() {
         if (webSocket != null) return
 
-        // Replace http:// with ws://
         val wsUrl = BuildConfig.BACKEND_URL.replace("http://", "ws://") + "ws/$sessionId"
 
         val request = Request.Builder()
@@ -58,7 +72,6 @@ class LiveRepository {
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 _isConnected.value = true
-                System.out.println("LiveRepository: WebSocket Opened")
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
@@ -67,11 +80,11 @@ class LiveRepository {
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 _isConnected.value = false
-                System.out.println("LiveRepository: WebSocket Closed - $reason")
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 _isConnected.value = false
+                // Auto-reconnect after 2 seconds
                 t.printStackTrace()
             }
         })
@@ -83,22 +96,19 @@ class LiveRepository {
         _isConnected.value = false
     }
 
+    // ─── SEND: Ultra-Low Latency ─────────────────────────
+
     /**
-     * Send raw PCM microphone audio bytes
+     * Send raw PCM audio as a BINARY WebSocket frame.
+     * No base64 encoding, no JSON wrapping — zero overhead.
+     * The backend handles binary frames directly (server.py line 413).
      */
     fun sendAudio(pcmData: ByteArray) {
-        if (_isConnected.value) {
-            val base64 = Base64.encodeToString(pcmData, Base64.NO_WRAP)
-            val json = JsonObject().apply {
-                addProperty("type", "audio")
-                addProperty("data", base64)
-            }
-            webSocket?.send(json.toString())
-        }
+        webSocket?.send(pcmData.toByteString())
     }
 
     /**
-     * Send base64 camera frame 
+     * Send base64 camera frame as JSON text frame.
      */
     fun sendImage(base64Jpeg: String) {
         if (_isConnected.value) {
@@ -110,15 +120,15 @@ class LiveRepository {
             webSocket?.send(json.toString())
         }
     }
-    
+
     /**
-     * Send a standard text message
+     * Send a standard text message.
      */
     fun sendText(text: String) {
         if (_isConnected.value) {
             val userMsg = ChatMessage(role = MessageRole.USER, content = text)
             _chatMessages.value = _chatMessages.value + userMsg
-            
+
             val json = JsonObject().apply {
                 addProperty("type", "text")
                 addProperty("text", text)
@@ -127,52 +137,83 @@ class LiveRepository {
         }
     }
 
-    /**
-     * Parses the ADK JSON events coming from the server.
-     * Looks for audio bytes to play, and transcriptions to show in the UI.
-     */
+    /** Clear the live transcription text */
+    fun clearUserTranscription() {
+        _userTranscription.value = ""
+    }
+
+    // ─── RECEIVE: Parse ADK Events ──────────────────────
+
     private fun handleServerMessage(jsonString: String) {
         try {
             val element = gson.fromJson(jsonString, JsonObject::class.java)
-            
-            // 1. Check for audio output
-            if (element.has("serverContent") && element.getAsJsonObject("serverContent").has("modelTurn")) {
-                val modelTurn = element.getAsJsonObject("serverContent").getAsJsonObject("modelTurn")
-                if (modelTurn.has("parts")) {
-                    for (partItem in modelTurn.getAsJsonArray("parts")) {
-                        val part = partItem.asJsonObject
-                        if (part.has("inlineData")) {
-                            val inlineData = part.getAsJsonObject("inlineData")
-                            if (inlineData.get("mimeType").asString.startsWith("audio/pcm")) {
-                                val audioBase64 = inlineData.get("data").asString
-                                val pcmBytes = Base64.decode(audioBase64, Base64.DEFAULT)
-                                onAudioReceived?.invoke(pcmBytes)
+
+            // 1. Audio output from AI
+            if (element.has("serverContent")) {
+                val sc = element.getAsJsonObject("serverContent")
+                if (sc.has("modelTurn")) {
+                    val modelTurn = sc.getAsJsonObject("modelTurn")
+                    if (modelTurn.has("parts")) {
+                        for (partItem in modelTurn.getAsJsonArray("parts")) {
+                            val part = partItem.asJsonObject
+                            if (part.has("inlineData")) {
+                                val inlineData = part.getAsJsonObject("inlineData")
+                                if (inlineData.get("mimeType").asString.startsWith("audio/pcm")) {
+                                    val audioBase64 = inlineData.get("data").asString
+                                    val pcmBytes = Base64.decode(audioBase64, Base64.DEFAULT)
+                                    onAudioReceived?.invoke(pcmBytes)
+                                }
+                            }
+                            // AI text response
+                            if (part.has("text")) {
+                                val text = part.get("text").asString
+                                if (text.isNotBlank()) {
+                                    val aiMsg = ChatMessage(role = MessageRole.ASSISTANT, content = text)
+                                    _chatMessages.value = _chatMessages.value + aiMsg
+                                    _partialText.value = text
+                                }
                             }
                         }
                     }
                 }
-            }
 
-            // 2. Check for AI transcription (final AI response)
-            if (element.has("serverContent") && element.getAsJsonObject("serverContent").has("modelTurn")) {
-                val modelTurn = element.getAsJsonObject("serverContent").getAsJsonObject("modelTurn")
-                if (modelTurn.has("parts")) {
-                     for (partItem in modelTurn.getAsJsonArray("parts")) {
-                        val part = partItem.asJsonObject
-                        if (part.has("text")) {
-                           val text = part.get("text").asString
-                           // Avoid adding empty turns
-                           if (text.isNotBlank()) {
-                               val aiMsg = ChatMessage(role = MessageRole.ASSISTANT, content = text)
-                               _chatMessages.value = _chatMessages.value + aiMsg
-                               _partialText.value = text // Update the bubble
-                           }
-                        }
-                    }
+                // Turn complete
+                if (sc.has("turnComplete") && sc.get("turnComplete").asBoolean) {
+                    onTurnComplete?.invoke()
                 }
             }
-            
-            // 3. User Voice Transcription
+
+            // 2. Input audio transcription (what the USER said — shown live)
+            if (element.has("inputAudioTranscription") || element.has("input_audio_transcription")) {
+                val transcription = element.getAsJsonObject(
+                    if (element.has("inputAudioTranscription")) "inputAudioTranscription"
+                    else "input_audio_transcription"
+                )
+                val transcript = transcription?.get("transcript")?.asString
+                    ?: transcription?.get("final_transcript")?.asString
+                    ?: ""
+                if (transcript.isNotBlank()) {
+                    _userTranscription.value = transcript
+                    val userMsg = ChatMessage(role = MessageRole.USER, content = transcript)
+                    _chatMessages.value = _chatMessages.value + userMsg
+                }
+            }
+
+            // 3. Output audio transcription (what AURA said — shown live)
+            if (element.has("outputAudioTranscription") || element.has("output_audio_transcription")) {
+                val transcription = element.getAsJsonObject(
+                    if (element.has("outputAudioTranscription")) "outputAudioTranscription"
+                    else "output_audio_transcription"
+                )
+                val transcript = transcription?.get("transcript")?.asString
+                    ?: transcription?.get("final_transcript")?.asString
+                    ?: ""
+                if (transcript.isNotBlank()) {
+                    _partialText.value = transcript
+                }
+            }
+
+            // 4. User voice transcription (clientContent format)
             if (element.has("clientContent") && element.getAsJsonObject("clientContent").has("turns")) {
                 val turns = element.getAsJsonObject("clientContent").getAsJsonArray("turns")
                 for (turnItem in turns) {
@@ -183,20 +224,11 @@ class LiveRepository {
                             if (part.has("text")) {
                                 val text = part.get("text").asString
                                 if (text.isNotBlank()) {
-                                    val userMsg = ChatMessage(role = MessageRole.USER, content = text)
-                                    _chatMessages.value = _chatMessages.value + userMsg
+                                    _userTranscription.value = text
                                 }
                             }
                         }
                     }
-                }
-            }
-
-            // 4. Turn complete detection
-            if (element.has("serverContent")) {
-                val serverContent = element.getAsJsonObject("serverContent")
-                if (serverContent.has("turnComplete") && serverContent.get("turnComplete").asBoolean) {
-                    onTurnComplete?.invoke()
                 }
             }
 

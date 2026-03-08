@@ -102,22 +102,21 @@ fun LiveStylistScreen(
     val isListening by viewModel.isListening.collectAsState()
     val isSpeaking by viewModel.isSpeaking.collectAsState()
     val partialText by viewModel.partialText.collectAsState()
+    val userTranscription by viewModel.userTranscription.collectAsState()
     val isConnected by viewModel.isConnected.collectAsState()
 
     // Camera
     var useFrontCamera by remember { mutableStateOf(true) }
     val cameraExecutor: ExecutorService = remember { Executors.newSingleThreadExecutor() }
 
-    // Image analyzer for streaming frames to Gemini
+    // Image analyzer — always streams when WebSocket is connected
     val imageAnalyzer = remember {
         ImageAnalysis.Builder()
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
             .build()
             .also {
                 it.setAnalyzer(cameraExecutor, com.example.aura.data.live.LiveImageAnalyzer { base64 ->
-                    if (isListening) {
-                        viewModel.sendCameraFrame(base64)
-                    }
+                    viewModel.sendCameraFrame(base64)
                 })
             }
     }
@@ -306,15 +305,27 @@ fun LiveStylistScreen(
                 )
             }
 
-            // Transcript bubble
+            // User speech bubble (what you're saying — live)
             AnimatedVisibility(
-                visible = partialText.isNotBlank(),
+                visible = isListening && userTranscription.isNotBlank(),
+                enter = fadeIn() + slideInVertically { it / 2 },
+                exit = fadeOut() + slideOutVertically { it / 2 }
+            ) {
+                TranscriptBubble(
+                    message = "🎤 $userTranscription",
+                    isAura = false
+                )
+            }
+
+            // AI response bubble (what Aura is saying — live)
+            AnimatedVisibility(
+                visible = !isListening && partialText.isNotBlank(),
                 enter = fadeIn() + slideInVertically { it / 2 },
                 exit = fadeOut() + slideOutVertically { it / 2 }
             ) {
                 TranscriptBubble(
                     message = partialText,
-                    isAura = !isListening
+                    isAura = true
                 )
             }
 

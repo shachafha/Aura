@@ -57,6 +57,7 @@ class LiveStylistViewModel(context: Context) : ViewModel() {
     val isSpeaking: StateFlow<Boolean> = _isSpeaking.asStateFlow()
 
     val partialText: StateFlow<String> = liveRepo.partialText
+    val userTranscription: StateFlow<String> = liveRepo.userTranscription
     val isConnected: StateFlow<Boolean> = liveRepo.isConnected
 
     init {
@@ -90,6 +91,9 @@ class LiveStylistViewModel(context: Context) : ViewModel() {
 
         // Auto-start passive listening
         wakeWordDetector.startListening()
+
+        // Pre-connect WebSocket immediately for zero-latency first interaction
+        connectLive()
     }
 
     /**
@@ -110,6 +114,7 @@ class LiveStylistViewModel(context: Context) : ViewModel() {
         _isListening.value = true
         _isSpeaking.value = false
         audioPlayer.stop()
+        liveRepo.clearUserTranscription()
 
         viewModelScope.launch {
             audioRecorder.startRecording { pcmBytes ->
