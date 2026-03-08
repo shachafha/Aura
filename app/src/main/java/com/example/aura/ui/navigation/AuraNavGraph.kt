@@ -6,8 +6,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import com.example.aura.data.repository.AuraRepository
-import com.example.aura.data.voice.VoiceService
 import com.example.aura.ui.live.LiveStylistScreen
 import com.example.aura.ui.live.LiveStylistViewModel
 import com.example.aura.ui.live.TranscriptSheet
@@ -17,16 +15,10 @@ import com.example.aura.ui.live.TranscriptSheet
  *
  * Single screen: LiveStylistScreen with camera + voice overlay.
  * TranscriptSheet opens as a bottom sheet over the live view.
- *
- * @param repository Shared AuraRepository instance
- * @param voiceService VoiceService instance (needs Activity context)
  */
 @Composable
-fun AuraNavGraph(
-    repository: AuraRepository,
-    voiceService: VoiceService
-) {
-    val viewModel = remember { LiveStylistViewModel(repository, voiceService) }
+fun AuraNavGraph() {
+    val viewModel = remember { LiveStylistViewModel() }
     val messages by viewModel.chatMessages.collectAsState()
 
     // Bottom sheet state

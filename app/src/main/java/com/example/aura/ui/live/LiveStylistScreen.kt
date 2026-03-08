@@ -4,7 +4,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import androidx.camera.core.CameraSelector
-import androidx.camera.core.ImageCapture
+import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
@@ -98,18 +98,28 @@ fun LiveStylistScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
 
     // State
-    val hasAnalyzed by viewModel.hasAnalyzed.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     val isListening by viewModel.isListening.collectAsState()
     val isSpeaking by viewModel.isSpeaking.collectAsState()
-    val lastMessage by viewModel.lastSpokenMessage.collectAsState()
     val partialText by viewModel.partialText.collectAsState()
-    val outfitAnalysis by viewModel.outfitAnalysis.collectAsState()
 
     // Camera — front camera by default for fashion selfie
     var useFrontCamera by remember { mutableStateOf(true) }
-    val imageCapture = remember { ImageCapture.Builder().build() }
     val cameraExecutor: ExecutorService = remember { Executors.newSingleThreadExecutor() }
+
+    val imageAnalyzer = remember {
+        ImageAnalysis.Builder()
+            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+            .build()
+            .also {
+                it.setAnalyzer(cameraExecutor, com.example.aura.data.live.LiveImageAnalyzer { base64 ->
+                    // Only send frames if we are actively talking to Aura
+                    if (isListening) {
+                        viewModel.sendCameraFrame(base64)
+                    }
+                })
+            }
+    }
 
     Box(modifier = Modifier.fillMaxSize()) {
         // ─── Full-screen Camera Preview ─────────────────
@@ -118,26 +128,26 @@ fun LiveStylistScreen(
                 val previewView = PreviewView(ctx)
                 val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
 
-                    cameraProviderFuture.addListener({
-                        val cameraProvider = cameraProviderFuture.get()
-                        val preview = Preview.Builder().build().also {
-                            it.surfaceProvider = previewView.surfaceProvider
-                        }
+                cameraProviderFuture.addListener({
+                    val cameraProvider = cameraProviderFuture.get()
+                    val preview = Preview.Builder().build().also {
+                        it.surfaceProvider = previewView.surfaceProvider
+                    }
 
-                        val cameraSelector = if (useFrontCamera)
-                            CameraSelector.DEFAULT_FRONT_CAMERA
-                        else
-                            CameraSelector.DEFAULT_BACK_CAMERA
+                    val cameraSelector = if (useFrontCamera)
+                        CameraSelector.DEFAULT_FRONT_CAMERA
+                    else
+                        CameraSelector.DEFAULT_BACK_CAMERA
 
-                        try {
-                            cameraProvider.unbindAll()
-                            cameraProvider.bindToLifecycle(
-                                lifecycleOwner,
-                                cameraSelector,
-                                preview,
-                                imageCapture
-                            )
-                        } catch (_: Exception) { }
+                    try {
+                        cameraProvider.unbindAll()
+                        cameraProvider.bindToLifecycle(
+                            lifecycleOwner,
+                            cameraSelector,
+                            preview,
+                            imageAnalyzer
+                        )
+                    } catch (_: Exception) { }
                 }, ContextCompat.getMainExecutor(ctx))
 
                 previewView
@@ -201,20 +211,18 @@ fun LiveStylistScreen(
                     )
                 }
 
-                // View Chat transcript button (only after analysis)
-                if (hasAnalyzed) {
-                    IconButton(
-                        onClick = onViewTranscript,
-                        colors = IconButtonDefaults.iconButtonColors(
-                            containerColor = Color.White.copy(alpha = 0.15f)
-                        )
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Chat,
-                            contentDescription = "View transcript",
-                            tint = Color.White
-                        )
-                    }
+                // View Chat transcript button
+                IconButton(
+                    onClick = onViewTranscript,
+                    colors = IconButtonDefaults.iconButtonColors(
+                        containerColor = Color.White.copy(alpha = 0.15f)
+                    )
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Chat,
+                        contentDescription = "View transcript",
+                        tint = Color.White
+                    )
                 }
             }
         }
@@ -246,9 +254,8 @@ fun LiveStylistScreen(
                 )
             }
 
-            // Transcript bubble — last AI message or partial speech
             AnimatedVisibility(
-                visible = lastMessage.isNotBlank() || partialText.isNotBlank() || isLoading,
+                visible = partialText.isNotBlank() || isLoading,
                 enter = fadeIn() + slideInVertically { it / 2 },
                 exit = fadeOut() + slideOutVertically { it / 2 }
             ) {
@@ -256,72 +263,27 @@ fun LiveStylistScreen(
                     message = when {
                         isListening && partialText.isNotBlank() -> "🎤 $partialText"
                         isLoading -> "✨ Analyzing..."
-                        else -> lastMessage
+                        else -> partialText
                     },
                     isAura = !isListening
                 )
             }
 
-            Spacer(modifier = Modifier.height(24.dp))
-
-            // Outfit tag chips (after analysis)
-            AnimatedVisibility(visible = outfitAnalysis != null && !isListening) {
-                outfitAnalysis?.let { analysis ->
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        modifier = Modifier.padding(horizontal = 24.dp)
-                    ) {
-                        analysis.items.take(4).forEach { item ->
-                            Text(
-                                text = item.name,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.tertiary,
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .background(MaterialTheme.colorScheme.tertiary.copy(alpha = 0.15f))
-                                    .padding(horizontal = 10.dp, vertical = 4.dp)
-                            )
-                        }
-                    }
-                }
-            }
-
             Spacer(modifier = Modifier.height(16.dp))
 
-            // Main action button
-            if (!hasAnalyzed) {
-                // ── Capture Button ──
-                CaptureButton(
-                    isLoading = isLoading,
-                    onClick = {
-                        imageCapture.takePicture(
-                            cameraExecutor,
-                            object : ImageCapture.OnImageCapturedCallback() {
-                                override fun onCaptureSuccess(image: ImageProxy) {
-                                    val bitmap = imageProxyToBitmap(image)
-                                    image.close()
-                                    viewModel.captureAndAnalyze(bitmap)
-                                }
-                                override fun onError(exception: ImageCaptureException) { }
-                            }
-                        )
+            // ── Live Voice & Vision Toggle ──
+            MicButton(
+                isListening = isListening,
+                isSpeaking = isSpeaking,
+                isLoading = isLoading,
+                onToggle = {
+                    if (isListening) {
+                        viewModel.stopVoiceInput()
+                    } else {
+                        viewModel.startVoiceInput()
                     }
-                )
-            } else {
-                // ── Mic Button (after analysis) ──
-                MicButton(
-                    isListening = isListening,
-                    isSpeaking = isSpeaking,
-                    isLoading = isLoading,
-                    onToggle = {
-                        if (isListening) {
-                            viewModel.stopVoiceInput()
-                        } else {
-                            viewModel.startVoiceInput()
-                        }
-                    }
-                )
-            }
+                }
+            )
         }
     }
 }

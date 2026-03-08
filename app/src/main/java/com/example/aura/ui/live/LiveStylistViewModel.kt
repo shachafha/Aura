@@ -3,10 +3,10 @@ package com.example.aura.ui.live
 import android.graphics.Bitmap
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.aura.data.live.LiveAudioPlayer
+import com.example.aura.data.live.LiveAudioRecorder
+import com.example.aura.data.live.LiveRepository
 import com.example.aura.data.model.ChatMessage
-import com.example.aura.data.model.OutfitAnalysis
-import com.example.aura.data.repository.AuraRepository
-import com.example.aura.data.voice.VoiceService
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -15,126 +15,113 @@ import kotlinx.coroutines.launch
 /**
  * ViewModel for the live stylist experience.
  *
- * Orchestrates camera capture, Gemini analysis, voice input/output,
- * and conversation state into a single unified flow.
+ * Orchestrates real-time audio and vision streaming via the Gemini Live API.
  */
-class LiveStylistViewModel(
-    private val repository: AuraRepository,
-    val voiceService: VoiceService
-) : ViewModel() {
+class LiveStylistViewModel : ViewModel() {
+
+    private val liveRepo = LiveRepository()
+    private val audioRecorder = LiveAudioRecorder()
+    private val audioPlayer = LiveAudioPlayer()
 
     // ─── State ──────────────────────────────────────────
 
     /** All messages in the conversation (for transcript). */
-    val chatMessages: StateFlow<List<ChatMessage>> = repository.chatMessages
+    val chatMessages: StateFlow<List<ChatMessage>> = liveRepo.chatMessages
 
-    /** Current outfit analysis result. */
-    val outfitAnalysis: StateFlow<OutfitAnalysis?> = repository.outfitAnalysis
+    private val _isLoading = MutableStateFlow(false)
+    val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
-    /** True while Gemini is processing. */
-    val isLoading: StateFlow<Boolean> = repository.isLoading
+    private val _isListening = MutableStateFlow(false)
+    val isListening: StateFlow<Boolean> = _isListening.asStateFlow()
 
-    /** Error from last Gemini call. */
-    val error: StateFlow<String?> = repository.error
+    private val _isSpeaking = MutableStateFlow(false)
+    val isSpeaking: StateFlow<Boolean> = _isSpeaking.asStateFlow()
 
-    private val _hasAnalyzed = MutableStateFlow(false)
-    /** True once the first outfit analysis is complete. */
-    val hasAnalyzed: StateFlow<Boolean> = _hasAnalyzed.asStateFlow()
-
-    private val _lastSpokenMessage = MutableStateFlow("")
-    /** The most recent AI message (shown as floating transcript bubble). */
-    val lastSpokenMessage: StateFlow<String> = _lastSpokenMessage.asStateFlow()
-
-    /** Voice service state — exposed for UI. */
-    val isListening: StateFlow<Boolean> = voiceService.isListening
-    val isSpeaking: StateFlow<Boolean> = voiceService.isSpeaking
-    val partialText: StateFlow<String> = voiceService.partialText
+    val partialText: StateFlow<String> = liveRepo.partialText
+    val isConnected: StateFlow<Boolean> = liveRepo.isConnected
 
     init {
-        // When voice recognition completes, auto-send the result to Gemini
-        viewModelScope.launch {
-            voiceService.recognizedText.collect { text ->
-                if (text.isNotBlank()) {
-                    sendMessage(text)
-                }
-            }
-        }
-
-        // Auto-listen after TTS finishes speaking (natural conversation loop)
-        voiceService.onSpeakingComplete = {
-            if (_hasAnalyzed.value) {
-                startVoiceInput()
-            }
+        // Prepare audio playback
+        liveRepo.onAudioReceived = { pcmChunk ->
+            _isSpeaking.value = true
+            audioPlayer.start()
+            audioPlayer.playAudioChunk(pcmChunk)
+            
+            // Note: In a production app, we'd need a more precise way to know when 
+            // the AI finishes speaking a full sentence vs streaming silence.
+            // For now, we leave isSpeaking = true during the stream.
         }
     }
 
     /**
-     * Capture and analyze an outfit image.
-     * After analysis, Aura speaks the greeting aloud.
+     * Connect to the Gemini Live API WebSocket.
      */
-    fun captureAndAnalyze(bitmap: Bitmap) {
-        viewModelScope.launch {
-            repository.analyzeOutfit(bitmap)
-
-            val analysis = repository.outfitAnalysis.value
-            if (analysis != null) {
-                _hasAnalyzed.value = true
-                val greeting = analysis.summary
-                _lastSpokenMessage.value = greeting
-                voiceService.speak(greeting)
-            }
-        }
+    fun connectLive() {
+        liveRepo.connect()
     }
 
     /**
-     * Start voice input (STT).
-     * When recognition completes, the result is auto-sent to Gemini.
+     * Start capturing microphone audio and streaming it to the backend.
      */
     fun startVoiceInput() {
-        voiceService.stopSpeaking() // Stop TTS if playing
-        voiceService.startListening()
+        if (!liveRepo.isConnected.value) connectLive()
+        
+        _isListening.value = true
+        _isSpeaking.value = false // Interrupt TTS if they start speaking
+        audioPlayer.stop()
+
+        viewModelScope.launch {
+            audioRecorder.startRecording { pcmBytes ->
+                liveRepo.sendAudio(pcmBytes)
+            }
+        }
     }
 
     /**
-     * Stop voice input.
+     * Stop capturing microphone audio.
      */
     fun stopVoiceInput() {
-        voiceService.stopListening()
+        _isListening.value = false
+        audioRecorder.stopRecording()
+    }
+
+    /**
+     * Send a camera frame to the backend.
+     */
+    fun sendCameraFrame(base64Image: String) {
+        if (liveRepo.isConnected.value) {
+            liveRepo.sendImage(base64Image)
+        }
     }
 
     /**
      * Send a text message to the AI stylist.
      * The AI response is spoken aloud via TTS.
      */
+    /**
+     * Send a text message to the AI stylist.
+     */
     fun sendMessage(message: String) {
         if (message.isBlank()) return
-        viewModelScope.launch {
-            repository.sendMessage(message.trim())
-
-            // Speak the latest AI response
-            val messages = repository.chatMessages.value
-            val lastAiMessage = messages.lastOrNull {
-                it.role == com.example.aura.data.model.MessageRole.ASSISTANT
-            }
-            if (lastAiMessage != null) {
-                _lastSpokenMessage.value = lastAiMessage.content
-                voiceService.speak(lastAiMessage.content)
-            }
-        }
+        if (!liveRepo.isConnected.value) connectLive()
+        liveRepo.sendText(message)
     }
 
     /**
-     * Clear session and reset for a new outfit.
+     * Clear session and disconnect.
      */
     fun reset() {
-        repository.clearSession()
-        _hasAnalyzed.value = false
-        _lastSpokenMessage.value = ""
-        voiceService.stopSpeaking()
+        audioRecorder.stopRecording()
+        audioPlayer.stop()
+        liveRepo.disconnect()
+        _isListening.value = false
+        _isSpeaking.value = false
     }
 
     override fun onCleared() {
         super.onCleared()
-        voiceService.shutdown()
+        audioRecorder.stopRecording()
+        audioPlayer.stop()
+        liveRepo.disconnect()
     }
 }

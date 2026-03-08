@@ -20,7 +20,7 @@ android {
         buildConfigField("String", "BACKEND_URL", "\"http://10.206.22.111:8080/\"")
 
         // Mock mode — set to false when backend + API keys are ready
-        buildConfigField("boolean", "USE_MOCK", "true")
+        buildConfigField("boolean", "USE_MOCK", "false")
 
         // Gemini API key (kept as fallback for direct calls)
         val geminiApiKey = project.findProperty("GEMINI_API_KEY") as? String ?: ""

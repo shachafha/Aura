@@ -57,6 +57,20 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        // ─── Request Permissions ────────────────────────
+        val requestPermissionLauncher = registerForActivityResult(
+            androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions()
+        ) { permissions ->
+            // In a real app, handle denied permissions smoothly
+        }
+        requestPermissionLauncher.launch(
+            arrayOf(
+                android.Manifest.permission.CAMERA,
+                android.Manifest.permission.RECORD_AUDIO,
+                android.Manifest.permission.ACCESS_COARSE_LOCATION
+            )
+        )
+
         // ─── Set up UI ───────────────────────────────────
         setContent {
             AuraTheme {
@@ -64,10 +78,7 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    AuraNavGraph(
-                        repository = repository,
-                        voiceService = voiceService
-                    )
+                    AuraNavGraph()
                 }
             }
         }
