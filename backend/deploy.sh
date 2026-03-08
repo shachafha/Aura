@@ -38,10 +38,11 @@ gcloud run deploy "${SERVICE_NAME}" \
     --allow-unauthenticated \
     --set-env-vars "GOOGLE_GENAI_API_KEY=$(grep GOOGLE_GENAI_API_KEY aura_agent/.env | cut -d= -f2)" \
     --set-env-vars "OPENWEATHER_API_KEY=$(grep OPENWEATHER_API_KEY aura_agent/.env | cut -d= -f2)" \
-    --memory 512Mi \
+    --memory 1Gi \
     --cpu 1 \
-    --timeout 60 \
-    --max-instances 5
+    --timeout 300 \
+    --max-instances 10 \
+    --session-affinity
 
 # ─── Get URL ───────────────────────────────────────────────────────
 SERVICE_URL=$(gcloud run services describe "${SERVICE_NAME}" --region "${REGION}" --format "value(status.url)")

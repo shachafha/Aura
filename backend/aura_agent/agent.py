@@ -1,15 +1,14 @@
 """
 Aura — AI Fashion Stylist Agent (Google ADK)
 
-This is the core ADK agent definition for Aura, a women's fashion stylist.
-The agent has access to tools for:
-- Outfit image analysis (via Gemini Vision)
-- Weather lookup (via OpenWeatherMap)
-- Product search (via Google Search grounding)
-- Outfit history analysis
+This module defines two ADK agents:
+- root_agent: Uses gemini-2.0-flash for REST API endpoints (text-only)
+- live_agent: Uses native audio model for Gemini Live API bidi-streaming
+
+Both agents share the same tool set but have different system instructions
+optimized for their respective interaction modes.
 """
 
-import base64
 import json
 import os
 import httpx
@@ -174,7 +173,16 @@ def search_fashion_products(query: str, category: str = "") -> dict:
     }
 
 
-# ─── ADK Agent Definition ─────────────────────────────────────────
+# ─── Shared Tools ──────────────────────────────────────────────────
+
+AURA_TOOLS = [
+    get_weather,
+    analyze_outfit_history,
+    search_fashion_products,
+    google_search,
+]
+
+# ─── REST Agent (text mode, for /analyze and /chat endpoints) ──────
 
 AURA_SYSTEM_INSTRUCTION = """
 You are Aura, a warm, knowledgeable, and empowering AI fashion stylist 
@@ -232,10 +240,58 @@ root_agent = Agent(
     model="gemini-2.0-flash",
     description="Aura — AI Fashion Stylist for Women. Analyzes outfits, gives weather-aware styling advice, and recommends real products.",
     instruction=AURA_SYSTEM_INSTRUCTION,
-    tools=[
-        get_weather,
-        analyze_outfit_history,
-        search_fashion_products,
-        google_search,
-    ],
+    tools=AURA_TOOLS,
+)
+
+
+# ─── Live Agent (native audio, for /ws bidi-streaming) ─────────────
+
+# Model for Gemini Live API — supports native audio I/O + tool calling
+LIVE_MODEL_ID = os.getenv(
+    "LIVE_MODEL_ID",
+    "gemini-live-2.5-flash-preview-native-audio-09-2025"
+)
+
+AURA_LIVE_SYSTEM_INSTRUCTION = """
+You are Aura, a warm and knowledgeable AI fashion stylist having a live 
+voice conversation. You help women look and feel their best every day.
+
+BEHAVIOR LOOP:
+1. **Wait**: Stay attentive. Analyze any outfit image you see in the video stream.
+2. **Analyze**: When you see clothing items or the user asks for help:
+   a. Identify visible clothing items, colors, and style.
+   b. If the user asks about weather-appropriate styling, use the get_weather tool.
+   c. If the user asks for product recommendations, use google_search to find real items.
+3. **Respond**: Give brief, actionable styling advice.
+
+VOICE CONVERSATION RULES:
+- Keep ALL responses under 2-3 sentences. Brevity is critical in live voice.
+- Be conversational and warm — like chatting with a stylish friend.
+- Never read out URLs, JSON, or technical data. Summarize naturally.
+- When recommending products, say the brand name, item, and approximate price.
+- Use natural speech patterns: "I love that!" not "I have identified a garment."
+- If you can see their outfit via camera, reference specific items you see.
+
+TOOL CALLING:
+- Use get_weather when the user mentions weather, temperature, or going outside.
+- Use google_search when the user asks where to buy something or wants product suggestions.
+- Use search_fashion_products to construct fashion-specific search queries.
+- Use analyze_outfit_history when the user mentions past outfits or variety.
+- After executing a tool, summarize the result conversationally. Do NOT read raw data.
+
+PERSONALITY:
+- Encouraging and supportive — never judgmental about appearance.
+- Confidently knowledgeable about fashion trends 2025-2026.
+- Frame all suggestions positively: "You could also try..." not "You shouldn't..."
+- Celebrate all body types and personal styles.
+
+Say "Hey! I'm Aura, your personal stylist. Show me what you're wearing!" to start.
+"""
+
+live_agent = Agent(
+    name="aura_live_stylist",
+    model=LIVE_MODEL_ID,
+    description="Aura — Live voice AI fashion stylist with real-time camera and audio interaction.",
+    instruction=AURA_LIVE_SYSTEM_INSTRUCTION,
+    tools=AURA_TOOLS,
 )

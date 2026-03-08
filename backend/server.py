@@ -1,32 +1,40 @@
 """
 Aura Backend — FastAPI Server
 
-Wraps the ADK agent as a REST API for the Android client.
+Wraps the ADK agent as a REST API + WebSocket streaming for the Android client.
 
 Endpoints:
-    POST /analyze  — Analyze outfit image + weather
-    POST /chat     — Stylist conversation
+    POST /analyze  — Analyze outfit image + weather (REST)
+    POST /chat     — Stylist conversation (REST)
     GET  /health   — Health check
+    WS   /ws/{session_id} — Gemini Live API bidi-streaming (WebSocket)
 """
 
+import asyncio
 import base64
 import json
+import logging
 import os
 import uuid
-from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from google.adk.agents import Agent
+from google.adk.agents.live_request_queue import LiveRequestQueue
+from google.adk.agents.run_config import RunConfig, StreamingMode
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
 # Load environment from the agent's .env
 load_dotenv("aura_agent/.env")
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("aura")
 
 # ─── Pydantic Models ──────────────────────────────────────────────
 
@@ -83,14 +91,23 @@ class ChatResponse(BaseModel):
 
 # ─── ADK Runner Setup ─────────────────────────────────────────────
 
+APP_NAME = "aura_stylist"
 session_service = InMemorySessionService()
 
-# Import the agent
-from aura_agent.agent import root_agent
+# Import agents
+from aura_agent.agent import root_agent, live_agent
 
+# REST runner (for /analyze and /chat endpoints)
 runner = Runner(
     agent=root_agent,
-    app_name="aura_stylist",
+    app_name=APP_NAME,
+    session_service=session_service,
+)
+
+# Live streaming runner (for /ws WebSocket endpoint)
+live_runner = Runner(
+    agent=live_agent,
+    app_name=APP_NAME,
     session_service=session_service,
 )
 
@@ -125,7 +142,7 @@ async def run_agent(user_id: str, session_id: str, message: str, image_bytes: by
 app = FastAPI(
     title="Aura — AI Fashion Stylist API",
     description="Backend for the Aura Android app. Powered by Google ADK + Gemini.",
-    version="1.0.0"
+    version="2.0.0"
 )
 
 app.add_middleware(
@@ -138,7 +155,12 @@ app.add_middleware(
 @app.get("/health")
 async def health():
     """Health check endpoint."""
-    return {"status": "ok", "agent": "aura_stylist"}
+    return {
+        "status": "ok",
+        "agent": "aura_stylist",
+        "live_agent": "aura_live_stylist",
+        "live_model": live_agent.model,
+    }
 
 
 @app.post("/analyze", response_model=AnalyzeResponse)
@@ -156,7 +178,7 @@ async def analyze_outfit(request: AnalyzeRequest):
 
     # Create a session
     session_service.create_session(
-        app_name="aura_stylist",
+        app_name=APP_NAME,
         user_id=user_id,
         session_id=session_id,
     )
@@ -233,7 +255,7 @@ async def chat(request: ChatRequest):
     session_id = f"session_{uuid.uuid4().hex[:8]}"
 
     session_service.create_session(
-        app_name="aura_stylist",
+        app_name=APP_NAME,
         user_id=user_id,
         session_id=session_id,
     )
@@ -298,6 +320,193 @@ async def chat(request: ChatRequest):
         message=clean_message,
         recommendations=recommendations
     )
+
+
+# ─── WebSocket: Gemini Live API Bidi-Streaming ─────────────────────
+
+@app.websocket("/ws/{session_id}")
+async def websocket_endpoint(websocket: WebSocket, session_id: str) -> None:
+    """
+    Bidirectional streaming endpoint using ADK's Gemini Live API Toolkit.
+
+    Follows the official ADK bidi-streaming pattern from:
+    - https://google.github.io/adk-docs/streaming/dev-guide/part1/
+    - https://codelabs.developers.google.com/way-back-home-level-3
+
+    The client sends JSON messages over WebSocket with types:
+      {"type": "text", "text": "..."}         — text message
+      {"type": "audio", "data": "base64..."}  — PCM 16kHz audio
+      {"type": "image", "data": "base64...", "mimeType": "image/jpeg"} — camera frame
+
+    The server streams ADK events back as JSON.
+    """
+    await websocket.accept()
+    logger.info(f"WebSocket connected: session={session_id}")
+
+    user_id = f"user_{session_id}"
+
+    # ========================================
+    # Phase 2: Session Initialization
+    # ========================================
+
+    # Detect model capabilities for RunConfig
+    model_name = live_agent.model
+    is_native_audio = "native-audio" in model_name.lower() or "live" in model_name.lower()
+
+    if is_native_audio:
+        response_modalities = ["AUDIO"]
+        run_config = RunConfig(
+            streaming_mode=StreamingMode.BIDI,
+            response_modalities=response_modalities,
+            input_audio_transcription=types.AudioTranscriptionConfig(),
+            output_audio_transcription=types.AudioTranscriptionConfig(),
+            session_resumption=types.SessionResumptionConfig(),
+        )
+        logger.info(f"Model Config: {model_name} (native audio, BIDI mode)")
+    else:
+        response_modalities = ["TEXT"]
+        run_config = RunConfig(
+            streaming_mode=StreamingMode.BIDI,
+            response_modalities=response_modalities,
+        )
+        logger.info(f"Model Config: {model_name} (text mode, BIDI)")
+
+    # Get or create ADK session (persistent across reconnections)
+    session = await session_service.get_session(
+        app_name=APP_NAME,
+        user_id=user_id,
+        session_id=session_id,
+    )
+    if not session:
+        await session_service.create_session(
+            app_name=APP_NAME,
+            user_id=user_id,
+            session_id=session_id,
+        )
+        logger.info(f"Created new session: {session_id}")
+    else:
+        logger.info(f"Resuming session: {session_id}")
+
+    # ========================================
+    # Phase 3: Active Session (concurrent bidirectional communication)
+    # ========================================
+
+    live_request_queue = LiveRequestQueue()
+
+    # Send initial greeting stimulus to wake up the model
+    logger.info("Sending initial 'Hello' stimulus to model...")
+    live_request_queue.send_content(
+        types.Content(parts=[types.Part(text="Hello")])
+    )
+
+    async def upstream_task() -> None:
+        """Receives messages from WebSocket → sends to LiveRequestQueue."""
+        try:
+            while True:
+                message = await websocket.receive()
+
+                # Handle binary frames (raw audio bytes)
+                if "bytes" in message:
+                    audio_data = message["bytes"]
+                    audio_blob = types.Blob(
+                        mime_type="audio/pcm;rate=16000",
+                        data=audio_data,
+                    )
+                    live_request_queue.send_realtime(audio_blob)
+
+                # Handle text frames (JSON messages)
+                elif "text" in message:
+                    text_data = message["text"]
+                    json_message = json.loads(text_data)
+
+                    msg_type = json_message.get("type", "")
+
+                    if msg_type == "text":
+                        # Text chat message
+                        user_text = json_message.get("text", "")
+                        logger.info(f"User text: {user_text}")
+                        content = types.Content(
+                            parts=[types.Part(text=user_text)]
+                        )
+                        live_request_queue.send_content(content)
+
+                    elif msg_type == "audio":
+                        # Base64-encoded PCM audio
+                        audio_data = base64.b64decode(
+                            json_message.get("data", "")
+                        )
+                        audio_blob = types.Blob(
+                            mime_type="audio/pcm;rate=16000",
+                            data=audio_data,
+                        )
+                        live_request_queue.send_realtime(audio_blob)
+
+                    elif msg_type == "image":
+                        # Base64-encoded image (camera frame)
+                        image_data = base64.b64decode(
+                            json_message.get("data", "")
+                        )
+                        mime_type = json_message.get("mimeType", "image/jpeg")
+                        image_blob = types.Blob(
+                            mime_type=mime_type,
+                            data=image_data,
+                        )
+                        live_request_queue.send_realtime(image_blob)
+                        logger.info("Received image frame")
+
+                    else:
+                        logger.warning(f"Unknown message type: {msg_type}")
+
+        except WebSocketDisconnect:
+            logger.info("Client disconnected (upstream)")
+        except Exception as e:
+            logger.error(f"Upstream error: {e}")
+
+    async def downstream_task() -> None:
+        """Receives Events from run_live() → sends to WebSocket."""
+        logger.info("Connecting to Gemini Live API...")
+        async for event in live_runner.run_live(
+            user_id=user_id,
+            session_id=session_id,
+            live_request_queue=live_request_queue,
+            run_config=run_config,
+        ):
+            # Log tool calls
+            if hasattr(event, "tool_call") and event.tool_call:
+                details = str(event.tool_call.function_calls)
+                logger.info(f"[TOOL EXECUTION] {details}")
+
+            # Log input transcription (what the user said via audio)
+            input_transcription = getattr(event, "input_audio_transcription", None)
+            if input_transcription and input_transcription.final_transcript:
+                logger.info(f"USER (audio): {input_transcription.final_transcript}")
+
+            # Log output transcription (what the agent said)
+            output_transcription = getattr(event, "output_audio_transcription", None)
+            if output_transcription and output_transcription.final_transcript:
+                logger.info(f"AURA: {output_transcription.final_transcript}")
+
+            # Send event to client as JSON
+            event_json = event.model_dump_json(
+                exclude_none=True, by_alias=True
+            )
+            await websocket.send_text(event_json)
+
+        logger.info("Gemini Live API connection closed.")
+
+    # Run both tasks concurrently (full-duplex)
+    try:
+        await asyncio.gather(upstream_task(), downstream_task())
+    except WebSocketDisconnect:
+        logger.info("Client disconnected")
+    except Exception as e:
+        logger.error(f"Session error: {e}", exc_info=False)
+    finally:
+        # ========================================
+        # Phase 4: Session Termination
+        # ========================================
+        logger.info("Closing live_request_queue")
+        live_request_queue.close()
 
 
 if __name__ == "__main__":
