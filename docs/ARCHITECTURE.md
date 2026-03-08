@@ -1,262 +1,120 @@
-# 🏗️ AURA — Architecture Document
+# Aura — System Architecture
+
+## Overview
+
+Aura is a **two-tier AI fashion agent** for women: a Kotlin/Compose Android app (thin client) backed by a Python/ADK agent on Google Cloud Run.
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                     ANDROID APP (Kotlin)                      │
+│                                                              │
+│  Camera → Capture → Send to Backend                          │
+│  Display: Analysis + Weather + Chat + Product Recs            │
+│  Local: Outfit history (SharedPrefs), Location (GPS)          │
+└────────────────────────┬─────────────────────────────────────┘
+                         │  HTTPS (Retrofit)
+                         ▼
+┌──────────────────────────────────────────────────────────────┐
+│              GOOGLE CLOUD RUN (Python Backend)                │
+│                                                              │
+│  FastAPI + Google ADK Agent (Gemini 2.0 Flash)                │
+│                                                              │
+│  Agent Tools:                                                │
+│  ├── get_weather(lat, lon) → OpenWeatherMap                  │
+│  ├── google_search (built-in ADK grounding)                  │
+│  ├── search_fashion_products(query) → product search          │
+│  └── analyze_outfit_history(json) → repetition detection      │
+│                                                              │
+│  Endpoints:                                                  │
+│  POST /analyze  — image + location → analysis + weather       │
+│  POST /chat     — message + context → response + products    │
+│  GET  /health   — healthcheck                                │
+└──────────────────────────────────────────────────────────────┘
+         │                    │                    │
+    Gemini Vision      OpenWeatherMap       Google Search
+```
 
 ## Tech Stack
 
-| Layer | Technology | Why |
-|---|---|---|
-| **Platform** | Android (Kotlin, Jetpack Compose) | Native camera + performance |
-| **AI Backend** | Google Gemini API (GenAI SDK) | Required by hackathon, native multimodal |
-| **Cloud** | Google Cloud (Cloud Run or Firebase) | Required by hackathon |
-| **Camera** | CameraX (Jetpack) | Modern Android camera API |
-| **Networking** | Retrofit / OkHttp | API calls to Gemini |
-| **Image Loading** | Coil (Compose-native) | Loading recommendation images |
-| **State** | Kotlin StateFlow + ViewModel | Standard Compose state management |
-| **Navigation** | Jetpack Navigation Compose | Screen transitions |
-| **DI** | Hilt (or manual — hackathon speed) | Dependency injection |
-
----
-
-## Architecture Diagram
-
-```
-┌──────────────────────────────────────────────────────────────────┐
-│                        AURA ANDROID APP                         │
-├──────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  ┌─────────────┐  ┌─────────────┐  ┌──────────────────────────┐ │
-│  │  Camera      │  │  Chat       │  │  Recommendations         │ │
-│  │  Screen      │  │  Screen     │  │  Screen / Overlay        │ │
-│  │             │  │             │  │                          │ │
-│  │  - Preview   │  │  - Messages │  │  - Item cards            │ │
-│  │  - Capture   │  │  - Input    │  │  - Images                │ │
-│  │  - Tags      │  │  - Voice?   │  │  - Descriptions          │ │
-│  └──────┬──────┘  └──────┬──────┘  └───────────┬──────────────┘ │
-│         │               │                     │                 │
-│  ───────┴───────────────┴─────────────────────┴──────────────── │
-│                      VIEWMODEL LAYER                             │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │  AuraViewModel                                            │   │
-│  │  - outfitState: StateFlow<OutfitAnalysis>                 │   │
-│  │  - chatMessages: StateFlow<List<ChatMessage>>             │   │
-│  │  - recommendations: StateFlow<List<Recommendation>>       │   │
-│  │  - captureOutfit(bitmap)                                  │   │
-│  │  - sendMessage(text)                                      │   │
-│  │  - generateRecommendations(query)                         │   │
-│  └──────────────────────────┬───────────────────────────────┘   │
-│                             │                                    │
-│  ───────────────────────────┴────────────────────────────────── │
-│                      REPOSITORY LAYER                            │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │  GeminiRepository                                         │   │
-│  │  - analyzeOutfit(image: Bitmap): OutfitAnalysis           │   │
-│  │  - chat(history, image, message): StylistResponse         │   │
-│  │  - getRecommendations(outfit, query): List<Recommendation>│   │
-│  └──────────────────────────┬───────────────────────────────┘   │
-│                             │                                    │
-│  ───────────────────────────┴────────────────────────────────── │
-│                      GEMINI SERVICE LAYER                        │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │  GeminiService (Google GenAI SDK)                         │   │
-│  │  - model: GenerativeModel("gemini-2.0-flash")             │   │
-│  │  - generateContent(prompt, image)                         │   │
-│  │  - startChat(history) → ChatSession                       │   │
-│  └──────────────────────────────────────────────────────────┘   │
-│                                                                  │
-└──────────────────────────────────────────────────────────────────┘
-         │
-         │  HTTPS / Google GenAI SDK
-         ▼
-┌──────────────────────────────────────────────────────────────────┐
-│                    GOOGLE CLOUD                                   │
-│  ┌─────────────────────┐  ┌───────────────────────────────────┐ │
-│  │  Gemini API          │  │  (Optional) Cloud Run Backend     │ │
-│  │  - Vision analysis   │  │  - Rate limiting                 │ │
-│  │  - Chat completion   │  │  - API key management            │ │
-│  │  - Image generation  │  │  - Outfit history (Firestore)    │ │
-│  └─────────────────────┘  └───────────────────────────────────┘ │
-└──────────────────────────────────────────────────────────────────┘
-```
-
----
+| Layer | Technology |
+|-------|-----------|
+| Android UI | Kotlin + Jetpack Compose + Material 3 |
+| Camera | CameraX |
+| Networking | Retrofit + OkHttp + Gson |
+| Location | Play Services Location (FusedLocationProvider) |
+| Local Storage | SharedPreferences (outfit history) |
+| Backend Framework | FastAPI + Uvicorn |
+| AI Agent | Google ADK (`google-adk`) |
+| AI Model | Gemini 2.0 Flash (multimodal) |
+| Weather | OpenWeatherMap API (free tier) |
+| Product Search | Google Search grounding (ADK built-in) |
+| Image Loading | Coil |
+| Deployment | Google Cloud Run (Docker) |
 
 ## Package Structure
 
+### Android (`app/src/main/java/com/example/aura/`)
 ```
-com.example.aura/
-├── MainActivity.kt                    # Entry point, navigation host
-├── di/                                # Dependency injection
-│   └── AppModule.kt                   # Hilt module (Gemini service, repos)
-│
-├── data/                              # Data layer
-│   ├── model/                         # Data classes
-│   │   ├── OutfitAnalysis.kt          # Detected items, style, colors
-│   │   ├── ChatMessage.kt            # Role, content, timestamp
-│   │   ├── Recommendation.kt         # Item name, description, imageUrl
-│   │   └── StylistResponse.kt        # AI response with optional recs
-│   │
-│   ├── remote/                        # Network / AI services
-│   │   └── GeminiService.kt          # Gemini API wrapper
-│   │
-│   └── repository/                    # Repository pattern
-│       └── GeminiRepository.kt       # Orchestrates AI calls
-│
-├── ui/                                # Presentation layer
-│   ├── theme/                         # Already exists
-│   │   ├── Color.kt
-│   │   ├── Theme.kt
-│   │   └── Type.kt
-│   │
-│   ├── navigation/                    # Navigation
-│   │   └── AuraNavGraph.kt           # NavHost + routes
-│   │
-│   ├── camera/                        # Camera feature
-│   │   ├── CameraScreen.kt           # Camera preview + capture UI
-│   │   └── CameraViewModel.kt        # Camera state management
-│   │
-│   ├── analysis/                      # Outfit analysis display
-│   │   ├── AnalysisScreen.kt         # Shows detected items + starts chat
-│   │   └── AnalysisViewModel.kt      # Analysis state
-│   │
-│   ├── chat/                          # Stylist chat
-│   │   ├── ChatScreen.kt             # Chat UI (messages + input)
-│   │   ├── ChatViewModel.kt          # Chat history + Gemini calls
-│   │   └── components/
-│   │       ├── MessageBubble.kt      # Single message display
-│   │       ├── ChatInput.kt          # Text input + send button
-│   │       └── RecommendationCard.kt # Product suggestion card
-│   │
-│   └── components/                    # Shared components
-│       ├── OutfitTagChip.kt          # "Black Jeans" chip
-│       ├── LoadingAnimation.kt       # "Analyzing..." shimmer
-│       └── AuraTopBar.kt             # App bar
-│
-└── util/                              # Utilities
-    ├── BitmapUtils.kt                # Image compression/conversion
-    └── PromptTemplates.kt            # Gemini system prompts
+├── MainActivity.kt
+├── data/
+│   ├── model/          # Domain models (OutfitAnalysis, ChatMessage, etc.)
+│   ├── remote/         # Retrofit API service + DTOs
+│   ├── local/          # OutfitHistoryManager
+│   └── repository/     # AuraRepository (single source of truth)
+├── ui/
+│   ├── camera/         # CameraScreen + CameraViewModel
+│   ├── analysis/       # AnalysisScreen + AnalysisViewModel
+│   ├── chat/           # ChatScreen + ChatViewModel + components/
+│   ├── components/     # Shared: WeatherBadge, OutfitTagChip, etc.
+│   ├── navigation/     # AuraNavGraph
+│   └── theme/          # Color, Theme, Type
+└── util/               # BitmapUtils, LocationHelper, PromptTemplates
 ```
 
----
-
-## Data Models
-
-```kotlin
-// OutfitAnalysis.kt
-data class OutfitAnalysis(
-    val items: List<ClothingItem>,     // "black jeans", "white shirt"
-    val overallStyle: String,           // "clean casual"
-    val dominantColors: List<String>,   // "#000000", "#FFFFFF"
-    val summary: String                 // "I see black jeans and a white shirt..."
-)
-
-data class ClothingItem(
-    val name: String,                   // "Black Jeans"
-    val category: String,               // "bottoms"
-    val color: String                   // "black"
-)
-
-// ChatMessage.kt
-data class ChatMessage(
-    val role: MessageRole,              // USER or ASSISTANT
-    val content: String,
-    val recommendations: List<Recommendation>? = null,
-    val timestamp: Long = System.currentTimeMillis()
-)
-
-enum class MessageRole { USER, ASSISTANT }
-
-// Recommendation.kt
-data class Recommendation(
-    val itemName: String,               // "Brown Leather Tote"
-    val description: String,            // "Perfect for casual outfits"
-    val imageUrl: String?,              // URL or null for placeholder
-    val category: String                // "bags"
-)
+### Backend (`backend/`)
+```
+├── aura_agent/
+│   ├── __init__.py
+│   ├── agent.py        # ADK agent with tools
+│   └── .env            # API keys (not committed)
+├── server.py           # FastAPI endpoints
+├── requirements.txt
+├── Dockerfile
+└── deploy.sh
 ```
 
----
+## Data Flow
 
-## Key API Contracts
+### Outfit Analysis
+1. User opens app → camera preview starts
+2. User taps capture → bitmap encoded to base64
+3. Android sends `POST /analyze { image_base64, lat, lon }` to Cloud Run
+4. Backend ADK agent:
+   - Runs Gemini Vision on the image → detects clothing items
+   - Calls `get_weather(lat, lon)` → gets weather context
+   - Returns structured `OutfitAnalysis + Weather + greeting`
+5. Android displays analysis screen with weather badge + item chips
+6. Outfit saved to local history
 
-### Gemini Service Interface
+### Stylist Chat
+1. User taps "Start Styling" → navigates to chat screen
+2. User types "What bag would match this?"
+3. Android sends `POST /chat { message, outfit_context, outfit_history, lat, lon }`
+4. Backend ADK agent:
+   - Receives outfit context + history + location
+   - Detects product question → uses `google_search` grounding
+   - Returns response with real product recommendations (name, price, URL)
+5. Android displays message bubble + horizontal recommendation cards
 
-```kotlin
-interface GeminiService {
+## API Contract
 
-    /** Analyze an outfit image → structured clothing detection */
-    suspend fun analyzeOutfit(image: Bitmap): OutfitAnalysis
+See `docs/TEAM_SKILLS.md` for the exact JSON schemas.
 
-    /** Send a message in the stylist conversation (with outfit context) */
-    suspend fun sendStylistMessage(
-        outfitImage: Bitmap,
-        chatHistory: List<ChatMessage>,
-        userMessage: String
-    ): StylistResponse
+## Hackathon Compliance
 
-    /** Generate recommendation images for items */
-    suspend fun generateRecommendationImage(
-        itemDescription: String
-    ): Bitmap?
-}
-```
-
-### Repository Interface
-
-```kotlin
-interface AuraRepository {
-    val outfitAnalysis: StateFlow<OutfitAnalysis?>
-    val chatMessages: StateFlow<List<ChatMessage>>
-    val isLoading: StateFlow<Boolean>
-
-    suspend fun analyzeOutfit(image: Bitmap)
-    suspend fun sendMessage(message: String): StylistResponse
-    fun clearSession()
-}
-```
-
----
-
-## Screen Flow
-
-```
-┌──────────┐     capture     ┌──────────────┐     analyzed    ┌──────────┐
-│  Camera   │ ─────────────→ │  Analyzing   │ ─────────────→ │  Chat    │
-│  Screen   │                │  (Loading)    │                │  Screen  │
-│           │                │              │                │          │
-│  Preview  │   ← retake ←  │  Shimmer     │                │  Msgs    │
-│  Capture  │                │  Animation   │                │  Input   │
-│  Button   │                └──────────────┘                │  Recs    │
-└──────────┘                                                 └──────────┘
-```
-
----
-
-## Gemini Prompt Strategy
-
-### System Prompt (Set Once)
-
-```
-You are Aura, a friendly and knowledgeable AI fashion stylist.
-You have just analyzed the user's outfit from their camera.
-Be conversational, warm, and specific. Reference actual items
-you can see. Give actionable styling advice.
-
-Rules:
-- Always reference the specific items the user is wearing
-- Suggest complementary items with specific colors/materials
-- When recommending items, format as JSON array for parsing
-- Keep responses concise (2-3 sentences max for chat)
-- If asked about occasion suitability, be honest but constructive
-```
-
-### Outfit Analysis Prompt
-
-```
-Analyze this outfit image. Return a JSON object with:
-{
-  "items": [{"name": "...", "category": "...", "color": "..."}],
-  "overallStyle": "...",
-  "dominantColors": ["#hex1", "#hex2"],
-  "summary": "A friendly 1-sentence description of the outfit"
-}
-Only return the JSON, no markdown formatting.
-```
+| Requirement | How We Meet It |
+|------------|---------------|
+| Google Cloud hosting | Backend on Cloud Run |
+| Google AI | Gemini 2.0 Flash via Google ADK |
+| Live Agent | Real-time multimodal: camera → AI analysis → conversation |
+| Innovation | Weather-aware styling + Google Search product recs + outfit memory |
