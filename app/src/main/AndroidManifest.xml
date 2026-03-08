@@ -8,9 +8,14 @@
         android:required="true" />
     <uses-permission android:name="android.permission.CAMERA" />
 
-    <!-- Internet for Gemini API calls -->
+    <!-- Internet for Cloud Run backend API calls -->
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- Location for weather-aware styling -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+
+    <!-- Allow cleartext for local dev (remove for production) -->
     <application
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
@@ -19,7 +24,8 @@
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@style/Theme.Aura">
+        android:theme="@style/Theme.Aura"
+        android:usesCleartextTraffic="true">
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -27,7 +33,6 @@
             android:theme="@style/Theme.Aura">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
-
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>

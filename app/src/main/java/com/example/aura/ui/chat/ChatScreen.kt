@@ -1,7 +1,6 @@
 package com.example.aura.ui.chat
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -15,27 +14,25 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.example.aura.data.model.ChatMessage
 import com.example.aura.data.model.MessageRole
+import com.example.aura.data.remote.WeatherDto
 import com.example.aura.ui.chat.components.ChatInput
 import com.example.aura.ui.chat.components.MessageBubble
 import com.example.aura.ui.chat.components.RecommendationCard
 import com.example.aura.ui.components.AuraTopBar
+import com.example.aura.ui.components.WeatherBadge
 
 /**
  * Main chat screen for the AI stylist conversation.
  *
- * Module C owner: This is a working scaffold. Customize:
- * - Message animations (fade in, slide up)
- * - Typing indicator while AI is loading
- * - Voice input integration
- * - Chat header with outfit summary
- *
- * @param viewModel ChatViewModel instance
- * @param onBack Navigate back to analysis screen
+ * Now includes weather badge and supports product recommendation cards
+ * with real shopping links from Google Search grounding.
  */
 @Composable
 fun ChatScreen(
     viewModel: ChatViewModel,
+    weather: WeatherDto? = null,
     onBack: () -> Unit
 ) {
     val messages by viewModel.chatMessages.collectAsState()
@@ -54,11 +51,22 @@ fun ChatScreen(
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
     ) {
-        // Top Bar
+        // Top Bar with optional weather
         AuraTopBar(
             title = "Aura Stylist",
             onBackClick = onBack
         )
+
+        // Weather badge below top bar
+        weather?.let { w ->
+            if (w.tempF > 0) {
+                WeatherBadge(
+                    tempF = w.tempF,
+                    condition = w.condition,
+                    city = w.city
+                )
+            }
+        }
 
         // Messages List
         LazyColumn(
@@ -86,9 +94,9 @@ fun ChatScreen(
             if (isLoading) {
                 item {
                     MessageBubble(
-                        message = com.example.aura.data.model.ChatMessage(
+                        message = ChatMessage(
                             role = MessageRole.ASSISTANT,
-                            content = "Thinking..."
+                            content = "✨ Thinking..."
                         ),
                         isUser = false,
                         isLoading = true

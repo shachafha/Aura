@@ -11,12 +11,12 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -37,17 +37,13 @@ import androidx.compose.ui.unit.dp
 import com.example.aura.data.model.OutfitAnalysis
 import com.example.aura.ui.components.LoadingAnimation
 import com.example.aura.ui.components.OutfitTagChip
+import com.example.aura.ui.components.WeatherBadge
 
 /**
- * Screen that displays the outfit analysis results.
+ * Screen that displays outfit analysis results with weather context.
  *
- * Shows: captured image, detected items as chips, style label,
- * and a button to start the stylist chat.
- *
- * @param outfitImage The captured outfit photo
- * @param viewModel AnalysisViewModel instance
- * @param onStartChat Called when user taps "Start Styling"
- * @param onRetake Called when user wants to recapture
+ * Shows: captured image, weather badge, detected items as chips,
+ * style label, and "Start Styling" button.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -60,6 +56,7 @@ fun AnalysisScreen(
     val analysis by viewModel.outfitAnalysis.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     val error by viewModel.error.collectAsState()
+    val weather by viewModel.weather.collectAsState()
 
     // Trigger analysis on first composition
     LaunchedEffect(outfitImage) {
@@ -73,22 +70,49 @@ fun AnalysisScreen(
             .padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
+        // Weather badge + Image row
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Your Outfit",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onBackground
+            )
+
+            // Weather Badge
+            weather?.let { w ->
+                if (w.tempF > 0) {
+                    WeatherBadge(
+                        tempF = w.tempF,
+                        condition = w.condition,
+                        city = w.city
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
         // Outfit Image
         Image(
             bitmap = outfitImage.asImageBitmap(),
             contentDescription = "Your outfit",
             modifier = Modifier
                 .fillMaxWidth()
-                .height(300.dp)
+                .height(280.dp)
                 .clip(RoundedCornerShape(16.dp)),
             contentScale = ContentScale.Crop
         )
 
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(modifier = Modifier.height(20.dp))
 
         // Loading State
         if (isLoading) {
-            LoadingAnimation(message = "Analyzing your outfit...")
+            LoadingAnimation(message = "✨ Analyzing your outfit...")
         }
 
         // Error State
@@ -105,7 +129,24 @@ fun AnalysisScreen(
         analysis?.let { result ->
             AnalysisResults(analysis = result)
 
-            Spacer(modifier = Modifier.height(24.dp))
+            // Weather styling note
+            weather?.let { w ->
+                if (w.stylingNote.isNotBlank()) {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = "🌤️ ${w.stylingNote}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                            .padding(12.dp)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(20.dp))
 
             // Start Styling Button
             Button(
@@ -138,9 +179,6 @@ fun AnalysisScreen(
     }
 }
 
-/**
- * Displays the analysis results: style label and detected item chips.
- */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun AnalysisResults(analysis: OutfitAnalysis) {
@@ -149,7 +187,6 @@ private fun AnalysisResults(analysis: OutfitAnalysis) {
         enter = fadeIn() + slideInVertically()
     ) {
         Column {
-            // Style Label
             Text(
                 text = analysis.overallStyle.uppercase(),
                 style = MaterialTheme.typography.labelLarge,
@@ -159,7 +196,6 @@ private fun AnalysisResults(analysis: OutfitAnalysis) {
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // Summary
             Text(
                 text = analysis.summary,
                 style = MaterialTheme.typography.bodyLarge,
@@ -168,7 +204,6 @@ private fun AnalysisResults(analysis: OutfitAnalysis) {
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // Detected Items as Chips
             Text(
                 text = "Detected Items",
                 style = MaterialTheme.typography.titleSmall,
@@ -183,10 +218,7 @@ private fun AnalysisResults(analysis: OutfitAnalysis) {
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 analysis.items.forEach { item ->
-                    OutfitTagChip(
-                        label = item.name,
-                        color = item.color
-                    )
+                    OutfitTagChip(label = item.name, color = item.color)
                 }
             }
         }

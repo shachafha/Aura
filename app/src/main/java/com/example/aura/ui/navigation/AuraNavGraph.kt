@@ -20,7 +20,7 @@ import com.example.aura.ui.chat.ChatScreen
 import com.example.aura.ui.chat.ChatViewModel
 
 /**
- * Navigation routes for the Aura app.
+ * Navigation routes.
  */
 object AuraRoutes {
     const val CAMERA = "camera"
@@ -29,25 +29,20 @@ object AuraRoutes {
 }
 
 /**
- * Main navigation graph for the Aura app.
+ * Main navigation graph.
  *
- * Flow: Camera → Analysis → Chat
+ * Flow: Camera → Analysis (with weather) → Chat (with weather + search)
  *
- * Module E (Integration) owner: This is the wiring layer.
- * Connects screens to shared state through ViewModels.
- *
- * @param repository Shared AuraRepository instance
- * @param navController Navigation controller (default creates one)
+ * @param repository Shared AuraRepository (backed by Cloud Run)
  */
 @Composable
 fun AuraNavGraph(
     repository: AuraRepository,
     navController: NavHostController = rememberNavController()
 ) {
-    // Shared state: the captured outfit image
     var capturedImage by remember { mutableStateOf<Bitmap?>(null) }
 
-    // ViewModels — in a real app, use Hilt. For hackathon, manual creation.
+    // ViewModels — manual DI for hackathon speed
     val cameraViewModel = remember { CameraViewModel() }
     val analysisViewModel = remember { AnalysisViewModel(repository) }
     val chatViewModel = remember { ChatViewModel(repository) }
@@ -56,7 +51,6 @@ fun AuraNavGraph(
         navController = navController,
         startDestination = AuraRoutes.CAMERA
     ) {
-        // ── Camera Screen ────────────────────────────────
         composable(AuraRoutes.CAMERA) {
             CameraScreen(
                 viewModel = cameraViewModel,
@@ -67,7 +61,6 @@ fun AuraNavGraph(
             )
         }
 
-        // ── Analysis Screen ──────────────────────────────
         composable(AuraRoutes.ANALYSIS) {
             capturedImage?.let { image ->
                 AnalysisScreen(
@@ -85,10 +78,11 @@ fun AuraNavGraph(
             }
         }
 
-        // ── Chat Screen ──────────────────────────────────
         composable(AuraRoutes.CHAT) {
+            val weather by repository.weather.collectAsState()
             ChatScreen(
                 viewModel = chatViewModel,
+                weather = weather,
                 onBack = {
                     navController.popBackStack()
                 }

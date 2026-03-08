@@ -8,12 +8,22 @@ lifecycleRuntimeKtx = "2.8.7"
 activityCompose = "1.9.3"
 kotlin = "2.0.21"
 composeBom = "2024.09.00"
-# ─── New dependencies ───
+# ─── Camera ───
 camerax = "1.4.1"
+# ─── AI ───
 generativeai = "0.9.0"
+# ─── Navigation ───
 navigationCompose = "2.8.5"
+# ─── Networking ───
+retrofit = "2.11.0"
+okhttp = "4.12.0"
+gson = "2.11.0"
+# ─── Image Loading ───
 coil = "2.7.0"
+# ─── UI ───
 materialIconsExtended = "1.7.6"
+# ─── Location ───
+playServicesLocation = "21.3.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -35,14 +45,21 @@ androidx-camera-core = { group = "androidx.camera", name = "camera-core", versio
 androidx-camera-camera2 = { group = "androidx.camera", name = "camera-camera2", version.ref = "camerax" }
 androidx-camera-lifecycle = { group = "androidx.camera", name = "camera-lifecycle", version.ref = "camerax" }
 androidx-camera-view = { group = "androidx.camera", name = "camera-view", version.ref = "camerax" }
-# ─── Gemini AI ───
+# ─── Gemini AI (kept for direct use if needed) ───
 google-generativeai = { group = "com.google.ai.client", name = "generativeai", version.ref = "generativeai" }
 # ─── Navigation ───
 androidx-navigation-compose = { group = "androidx.navigation", name = "navigation-compose", version.ref = "navigationCompose" }
+# ─── Networking (Retrofit + Gson) ───
+retrofit-core = { group = "com.squareup.retrofit2", name = "retrofit", version.ref = "retrofit" }
+retrofit-converter-gson = { group = "com.squareup.retrofit2", name = "converter-gson", version.ref = "retrofit" }
+okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
+gson = { group = "com.google.code.gson", name = "gson", version.ref = "gson" }
 # ─── Image Loading ───
 coil-compose = { group = "io.coil-kt", name = "coil-compose", version.ref = "coil" }
 # ─── Material Icons Extended ───
 androidx-material-icons-extended = { group = "androidx.compose.material", name = "material-icons-extended", version.ref = "materialIconsExtended" }
+# ─── Location ───
+play-services-location = { group = "com.google.android.gms", name = "play-services-location", version.ref = "playServicesLocation" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

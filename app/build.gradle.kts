@@ -5,9 +5,7 @@ plugins {
 
 android {
     namespace = "com.example.aura"
-    compileSdk {
-        version = release(36)
-    }
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.example.aura"
@@ -18,7 +16,10 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        // Gemini API key from local.properties
+        // Backend URL — update after Cloud Run deployment
+        buildConfigField("String", "BACKEND_URL", "\"http://10.0.2.2:8080/\"")
+
+        // Gemini API key (kept as fallback for direct calls)
         val geminiApiKey = project.findProperty("GEMINI_API_KEY") as? String ?: ""
         buildConfigField("String", "GEMINI_API_KEY", "\"$geminiApiKey\"")
     }
@@ -65,11 +66,20 @@ dependencies {
     implementation(libs.androidx.camera.lifecycle)
     implementation(libs.androidx.camera.view)
 
-    // ─── Gemini AI ───
+    // ─── Gemini AI (fallback for direct calls) ───
     implementation(libs.google.generativeai)
+
+    // ─── Networking (Retrofit → Cloud Run backend) ───
+    implementation(libs.retrofit.core)
+    implementation(libs.retrofit.converter.gson)
+    implementation(libs.okhttp)
+    implementation(libs.gson)
 
     // ─── Image Loading ───
     implementation(libs.coil.compose)
+
+    // ─── Location (weather-aware styling) ───
+    implementation(libs.play.services.location)
 
     // ─── Testing ───
     testImplementation(libs.junit)
