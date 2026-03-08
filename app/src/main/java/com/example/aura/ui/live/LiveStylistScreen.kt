@@ -41,7 +41,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.CameraFront
 import androidx.compose.material.icons.filled.Chat
+import androidx.compose.material.icons.filled.FlipCameraAndroid
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.FloatingActionButton
@@ -104,7 +106,8 @@ fun LiveStylistScreen(
     val partialText by viewModel.partialText.collectAsState()
     val outfitAnalysis by viewModel.outfitAnalysis.collectAsState()
 
-    // Camera
+    // Camera — front camera by default for fashion selfie
+    var useFrontCamera by remember { mutableStateOf(true) }
     val imageCapture = remember { ImageCapture.Builder().build() }
     val cameraExecutor: ExecutorService = remember { Executors.newSingleThreadExecutor() }
 
@@ -115,21 +118,26 @@ fun LiveStylistScreen(
                 val previewView = PreviewView(ctx)
                 val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
 
-                cameraProviderFuture.addListener({
-                    val cameraProvider = cameraProviderFuture.get()
-                    val preview = Preview.Builder().build().also {
-                        it.surfaceProvider = previewView.surfaceProvider
-                    }
+                    cameraProviderFuture.addListener({
+                        val cameraProvider = cameraProviderFuture.get()
+                        val preview = Preview.Builder().build().also {
+                            it.surfaceProvider = previewView.surfaceProvider
+                        }
 
-                    try {
-                        cameraProvider.unbindAll()
-                        cameraProvider.bindToLifecycle(
-                            lifecycleOwner,
-                            CameraSelector.DEFAULT_BACK_CAMERA,
-                            preview,
-                            imageCapture
-                        )
-                    } catch (_: Exception) { }
+                        val cameraSelector = if (useFrontCamera)
+                            CameraSelector.DEFAULT_FRONT_CAMERA
+                        else
+                            CameraSelector.DEFAULT_BACK_CAMERA
+
+                        try {
+                            cameraProvider.unbindAll()
+                            cameraProvider.bindToLifecycle(
+                                lifecycleOwner,
+                                cameraSelector,
+                                preview,
+                                imageCapture
+                            )
+                        } catch (_: Exception) { }
                 }, ContextCompat.getMainExecutor(ctx))
 
                 previewView
@@ -178,19 +186,35 @@ fun LiveStylistScreen(
                 )
             }
 
-            // View Chat transcript button (only after analysis)
-            if (hasAnalyzed) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                // Camera flip button
                 IconButton(
-                    onClick = onViewTranscript,
+                    onClick = { useFrontCamera = !useFrontCamera },
                     colors = IconButtonDefaults.iconButtonColors(
                         containerColor = Color.White.copy(alpha = 0.15f)
                     )
                 ) {
                     Icon(
-                        imageVector = Icons.Default.Chat,
-                        contentDescription = "View transcript",
+                        imageVector = Icons.Default.FlipCameraAndroid,
+                        contentDescription = "Flip camera",
                         tint = Color.White
                     )
+                }
+
+                // View Chat transcript button (only after analysis)
+                if (hasAnalyzed) {
+                    IconButton(
+                        onClick = onViewTranscript,
+                        colors = IconButtonDefaults.iconButtonColors(
+                            containerColor = Color.White.copy(alpha = 0.15f)
+                        )
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Chat,
+                            contentDescription = "View transcript",
+                            tint = Color.White
+                        )
+                    }
                 }
             }
         }
@@ -203,6 +227,25 @@ fun LiveStylistScreen(
                 .padding(bottom = 48.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            // State label
+            AnimatedVisibility(
+                visible = isListening || isSpeaking || isLoading,
+                enter = fadeIn(),
+                exit = fadeOut()
+            ) {
+                Text(
+                    text = when {
+                        isListening -> "🎤 Aura is listening..."
+                        isLoading -> "✨ Aura is thinking..."
+                        isSpeaking -> "💬 Aura is speaking..."
+                        else -> ""
+                    },
+                    style = MaterialTheme.typography.labelMedium,
+                    color = Color.White.copy(alpha = 0.8f),
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+            }
+
             // Transcript bubble — last AI message or partial speech
             AnimatedVisibility(
                 visible = lastMessage.isNotBlank() || partialText.isNotBlank() || isLoading,

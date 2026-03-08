@@ -1,11 +1,9 @@
 package com.example.aura
 
-import android.Manifest
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -14,6 +12,7 @@ import androidx.lifecycle.lifecycleScope
 import com.example.aura.data.local.OutfitHistoryManager
 import com.example.aura.data.remote.RetrofitClient
 import com.example.aura.data.repository.AuraRepository
+import com.example.aura.data.repository.MockRepository
 import com.example.aura.data.voice.VoiceService
 import com.example.aura.ui.navigation.AuraNavGraph
 import com.example.aura.ui.theme.AuraTheme
@@ -23,13 +22,8 @@ import kotlinx.coroutines.launch
 /**
  * Main entry point for the Aura app.
  *
- * Sets up:
- * - VoiceService for speech-to-text live agent
- * - Retrofit client pointing to Cloud Run backend
- * - AuraRepository with outfit history and API service
- * - Location helper for weather-aware styling
- * - Navigation graph
- * Requests CAMERA + RECORD_AUDIO permissions on launch.
+ * If USE_MOCK is true (default), uses MockRepository for API-key-free testing.
+ * Set USE_MOCK to false in build.gradle.kts when backend is deployed.
  */
 class MainActivity : ComponentActivity() {
 
@@ -40,14 +34,19 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
 
         // ─── Initialize dependencies ─────────────────────
-        // Set backend URL (update after Cloud Run deploy)
-        RetrofitClient.BASE_URL = BuildConfig.BACKEND_URL
+        val repository: AuraRepository = if (BuildConfig.USE_MOCK) {
+            // Mock mode — no API keys needed, hardcoded fashion responses
+            MockRepository()
+        } else {
+            // Real mode — connects to Cloud Run backend
+            RetrofitClient.BASE_URL = BuildConfig.BACKEND_URL
+            val apiService = RetrofitClient.instance
+            val historyManager = OutfitHistoryManager(this)
+            AuraRepository(apiService, historyManager)
+        }
 
-        val apiService = RetrofitClient.instance
-        val historyManager = OutfitHistoryManager(this)
-        val repository = AuraRepository(apiService, historyManager)
-        val locationHelper = LocationHelper(this)
         voiceService = VoiceService(this)
+        val locationHelper = LocationHelper(this)
 
         // ─── Fetch location in background ────────────────
         lifecycleScope.launch {
@@ -57,20 +56,6 @@ class MainActivity : ComponentActivity() {
                 repository.userLon = location.longitude
             }
         }
-
-        // ─── Request permissions ─────────────────────────
-        val permissionLauncher = registerForActivityResult(
-            ActivityResultContracts.RequestMultiplePermissions()
-        ) { /* Permissions handled */ }
-
-        permissionLauncher.launch(
-            arrayOf(
-                Manifest.permission.CAMERA,
-                Manifest.permission.RECORD_AUDIO,
-                Manifest.permission.ACCESS_COARSE_LOCATION,
-                Manifest.permission.ACCESS_FINE_LOCATION
-            )
-        )
 
         // ─── Set up UI ───────────────────────────────────
         setContent {

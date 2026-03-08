@@ -59,6 +59,13 @@ class LiveStylistViewModel(
                 }
             }
         }
+
+        // Auto-listen after TTS finishes speaking (natural conversation loop)
+        voiceService.onSpeakingComplete = {
+            if (_hasAnalyzed.value) {
+                startVoiceInput()
+            }
+        }
     }
 
     /**

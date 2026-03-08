@@ -19,6 +19,9 @@ android {
         // Backend URL — update after Cloud Run deployment
         buildConfigField("String", "BACKEND_URL", "\"http://10.206.22.111:8080/\"")
 
+        // Mock mode — set to false when backend + API keys are ready
+        buildConfigField("boolean", "USE_MOCK", "true")
+
         // Gemini API key (kept as fallback for direct calls)
         val geminiApiKey = project.findProperty("GEMINI_API_KEY") as? String ?: ""
         buildConfigField("String", "GEMINI_API_KEY", "\"$geminiApiKey\"")
@@ -67,7 +70,7 @@ dependencies {
     implementation(libs.androidx.camera.view)
 
     // ─── Gemini AI (fallback for direct calls) ───
-    implementation(libs.google.generativeai)
+    implementation("com.google.ai.client.generativeai:generativeai:0.9.0")
 
     // ─── Networking (Retrofit → Cloud Run backend) ───
     implementation(libs.retrofit.core)
