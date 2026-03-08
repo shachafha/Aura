@@ -11,7 +11,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.example.aura.data.model.ChatMessage
@@ -20,6 +22,8 @@ import com.example.aura.data.remote.WeatherDto
 import com.example.aura.ui.chat.components.ChatInput
 import com.example.aura.ui.chat.components.MessageBubble
 import com.example.aura.ui.chat.components.RecommendationCard
+import com.example.aura.ui.chat.components.SuggestionChips
+import com.example.aura.ui.chat.components.TypingIndicator
 import com.example.aura.ui.components.AuraTopBar
 import com.example.aura.ui.components.WeatherBadge
 
@@ -28,6 +32,14 @@ import com.example.aura.ui.components.WeatherBadge
  *
  * Now includes weather badge and supports product recommendation cards
  * with real shopping links from Google Search grounding.
+ * Features:
+ * - Animated message bubbles with Aura avatar
+ * - Bouncing typing indicator while AI responds
+ * - Quick suggestion chips for onboarding
+ * - Horizontally scrollable recommendation cards
+ *
+ * @param viewModel ChatViewModel instance
+ * @param onBack Navigate back to analysis screen
  */
 @Composable
 fun ChatScreen(
@@ -38,6 +50,22 @@ fun ChatScreen(
     val messages by viewModel.chatMessages.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     val listState = rememberLazyListState()
+
+    // Show suggestion chips only until the user sends their first message
+    val showSuggestions by remember {
+        derivedStateOf {
+            messages.none { it.role == MessageRole.USER }
+        }
+    }
+
+    val suggestions = remember {
+        listOf(
+            "What bag matches this?",
+            "Is this date-ready?",
+            "Suggest shoes",
+            "Color advice"
+        )
+    }
 
     // Auto-scroll to bottom when new messages arrive
     LaunchedEffect(messages.size) {
@@ -90,20 +118,20 @@ fun ChatScreen(
                 }
             }
 
-            // Loading indicator
+            // Typing indicator
             if (isLoading) {
                 item {
-                    MessageBubble(
-                        message = ChatMessage(
-                            role = MessageRole.ASSISTANT,
-                            content = "✨ Thinking..."
-                        ),
-                        isUser = false,
-                        isLoading = true
-                    )
+                    TypingIndicator()
                 }
             }
         }
+
+        // Quick suggestion chips (visible until first user message)
+        SuggestionChips(
+            suggestions = suggestions,
+            visible = showSuggestions,
+            onSuggestionClick = { viewModel.sendMessage(it) }
+        )
 
         // Input Bar
         ChatInput(

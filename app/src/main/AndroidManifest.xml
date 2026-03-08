@@ -8,7 +8,10 @@
         android:required="true" />
     <uses-permission android:name="android.permission.CAMERA" />
 
-    <!-- Internet for Cloud Run backend API calls -->
+    <!-- Microphone permission for voice input (STT) -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <!-- Internet for Cloud Run backend API calls & Gemini -->
     <uses-permission android:name="android.permission.INTERNET" />
 
     <!-- Location for weather-aware styling -->
