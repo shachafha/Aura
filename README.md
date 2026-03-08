@@ -69,8 +69,10 @@ Android App (Camera + UI) ──Retrofit──▶ Cloud Run (ADK Agent + FastAPI
 
 ## Team
 <!-- Add your names here -->
-- Person 1 (Android)
-- Person 2 (Backend)
+- Ayush Verma
+- Shachaf Rispler
+- Sayra Kurtoglu
+- Manuel Manalo
 
 ## API Keys Needed
 | Key | Where to Get | Used For |
