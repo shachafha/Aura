@@ -3,9 +3,12 @@ package com.example.aura.ui.live
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
-import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -23,7 +26,6 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -40,11 +42,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.material.icons.filled.CameraAlt
-import androidx.compose.material.icons.filled.CameraFront
 import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.FlipCameraAndroid
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.FloatingActionButtonDefaults
@@ -80,14 +81,12 @@ import java.util.concurrent.Executors
 /**
  * The main live stylist screen — camera-first, voice-driven.
  *
- * Layout:
+ * Features:
  * - Full-screen camera preview (always live)
- * - Bottom overlay: transcript bubble + mic button + chat button
- * - Before capture: shows capture button
- * - After capture: shows mic button for voice conversation
- *
- * @param viewModel LiveStylistViewModel instance
- * @param onViewTranscript Called when user taps "View Chat" to open transcript sheet
+ * - "Hey Aura" wake word detection (always on)
+ * - Auto-stop after 5 seconds of silence
+ * - Gallery photo picker for analyzing past outfits
+ * - Manual mic toggle as fallback
  */
 @Composable
 fun LiveStylistScreen(
@@ -98,27 +97,47 @@ fun LiveStylistScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
 
     // State
+    val auraState by viewModel.auraState.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     val isListening by viewModel.isListening.collectAsState()
     val isSpeaking by viewModel.isSpeaking.collectAsState()
     val partialText by viewModel.partialText.collectAsState()
+    val isConnected by viewModel.isConnected.collectAsState()
 
-    // Camera — front camera by default for fashion selfie
+    // Camera
     var useFrontCamera by remember { mutableStateOf(true) }
     val cameraExecutor: ExecutorService = remember { Executors.newSingleThreadExecutor() }
 
+    // Image analyzer for streaming frames to Gemini
     val imageAnalyzer = remember {
         ImageAnalysis.Builder()
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
             .build()
             .also {
                 it.setAnalyzer(cameraExecutor, com.example.aura.data.live.LiveImageAnalyzer { base64 ->
-                    // Only send frames if we are actively talking to Aura
                     if (isListening) {
                         viewModel.sendCameraFrame(base64)
                     }
                 })
             }
+    }
+
+    // Gallery photo picker
+    val photoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri: Uri? ->
+        uri?.let {
+            try {
+                val inputStream = context.contentResolver.openInputStream(it)
+                val bitmap = BitmapFactory.decodeStream(inputStream)
+                inputStream?.close()
+                if (bitmap != null) {
+                    viewModel.analyzeGalleryImage(bitmap)
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -194,9 +213,37 @@ fun LiveStylistScreen(
                     fontWeight = FontWeight.Bold,
                     color = Color.White
                 )
+                // Connection indicator
+                if (isConnected) {
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .clip(CircleShape)
+                            .background(Color(0xFF4CAF50))
+                    )
+                }
             }
 
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                // Gallery button
+                IconButton(
+                    onClick = {
+                        photoPickerLauncher.launch(
+                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                        )
+                    },
+                    colors = IconButtonDefaults.iconButtonColors(
+                        containerColor = Color.White.copy(alpha = 0.15f)
+                    )
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.PhotoLibrary,
+                        contentDescription = "Pick from gallery",
+                        tint = Color.White
+                    )
+                }
+
                 // Camera flip button
                 IconButton(
                     onClick = { useFrontCamera = !useFrontCamera },
@@ -237,41 +284,43 @@ fun LiveStylistScreen(
         ) {
             // State label
             AnimatedVisibility(
-                visible = isListening || isSpeaking || isLoading,
+                visible = true,
                 enter = fadeIn(),
                 exit = fadeOut()
             ) {
                 Text(
-                    text = when {
-                        isListening -> "🎤 Aura is listening..."
-                        isLoading -> "✨ Aura is thinking..."
-                        isSpeaking -> "💬 Aura is speaking..."
-                        else -> ""
+                    text = when (auraState) {
+                        LiveStylistViewModel.AuraState.PASSIVE_LISTENING -> "✨ Say \"Hey Aura\" to start"
+                        LiveStylistViewModel.AuraState.ACTIVE_LISTENING -> "🎤 Aura is listening..."
+                        LiveStylistViewModel.AuraState.PROCESSING -> "💭 Aura is thinking..."
+                        LiveStylistViewModel.AuraState.SPEAKING -> "💬 Aura is speaking..."
                     },
-                    style = MaterialTheme.typography.labelMedium,
-                    color = Color.White.copy(alpha = 0.8f),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = when (auraState) {
+                        LiveStylistViewModel.AuraState.PASSIVE_LISTENING -> Color.White.copy(alpha = 0.6f)
+                        LiveStylistViewModel.AuraState.ACTIVE_LISTENING -> Color(0xFFFF5252) // Red
+                        LiveStylistViewModel.AuraState.PROCESSING -> Color(0xFFFFD740) // Gold
+                        LiveStylistViewModel.AuraState.SPEAKING -> Color(0xFF69F0AE) // Green
+                    },
                     modifier = Modifier.padding(bottom = 8.dp)
                 )
             }
 
+            // Transcript bubble
             AnimatedVisibility(
-                visible = partialText.isNotBlank() || isLoading,
+                visible = partialText.isNotBlank(),
                 enter = fadeIn() + slideInVertically { it / 2 },
                 exit = fadeOut() + slideOutVertically { it / 2 }
             ) {
                 TranscriptBubble(
-                    message = when {
-                        isListening && partialText.isNotBlank() -> "🎤 $partialText"
-                        isLoading -> "✨ Analyzing..."
-                        else -> partialText
-                    },
+                    message = partialText,
                     isAura = !isListening
                 )
             }
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // ── Live Voice & Vision Toggle ──
+            // ── Live Voice & Vision Toggle (fallback for manual control) ──
             MicButton(
                 isListening = isListening,
                 isSpeaking = isSpeaking,
@@ -327,46 +376,6 @@ private fun TranscriptBubble(
 }
 
 /**
- * Capture button — large white circle with camera icon.
- */
-@Composable
-private fun CaptureButton(
-    isLoading: Boolean,
-    onClick: () -> Unit
-) {
-    FloatingActionButton(
-        onClick = { if (!isLoading) onClick() },
-        modifier = Modifier.size(80.dp),
-        shape = CircleShape,
-        containerColor = Color.White,
-        elevation = FloatingActionButtonDefaults.elevation(8.dp)
-    ) {
-        if (isLoading) {
-            val infiniteTransition = rememberInfiniteTransition(label = "capture_pulse")
-            val scale by infiniteTransition.animateFloat(
-                initialValue = 0.8f,
-                targetValue = 1.2f,
-                animationSpec = infiniteRepeatable(tween(600), RepeatMode.Reverse),
-                label = "pulse"
-            )
-            Icon(
-                imageVector = Icons.Default.AutoAwesome,
-                contentDescription = "Analyzing",
-                modifier = Modifier.size(36.dp).scale(scale),
-                tint = MaterialTheme.colorScheme.primary
-            )
-        } else {
-            Icon(
-                imageVector = Icons.Default.CameraAlt,
-                contentDescription = "Capture outfit",
-                modifier = Modifier.size(36.dp),
-                tint = Color.Black
-            )
-        }
-    }
-}
-
-/**
  * Mic button — pulsing animation when listening, gold when idle.
  */
 @Composable
@@ -417,23 +426,5 @@ private fun MicButton(
                 else -> MaterialTheme.colorScheme.onPrimary
             }
         )
-    }
-}
-
-/**
- * Convert an ImageProxy to a Bitmap with correct rotation.
- */
-private fun imageProxyToBitmap(imageProxy: ImageProxy): Bitmap {
-    val buffer = imageProxy.planes[0].buffer
-    val bytes = ByteArray(buffer.remaining())
-    buffer.get(bytes)
-    val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-
-    val rotationDegrees = imageProxy.imageInfo.rotationDegrees
-    return if (rotationDegrees != 0) {
-        val matrix = Matrix().apply { postRotate(rotationDegrees.toFloat()) }
-        Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
-    } else {
-        bitmap
     }
 }

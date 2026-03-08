@@ -32,6 +32,10 @@ from google.genai import types
 # Load environment from the agent's .env
 load_dotenv("aura_agent/.env")
 
+# Ensure the google-genai SDK can find the API key
+if os.getenv("GEMINI_API_KEY") and not os.getenv("GOOGLE_API_KEY"):
+    os.environ["GOOGLE_API_KEY"] = os.getenv("GEMINI_API_KEY")
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("aura")

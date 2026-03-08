@@ -39,6 +39,9 @@ class LiveRepository {
     // Provide raw PCM audio bytes to be played back
     var onAudioReceived: ((ByteArray) -> Unit)? = null
 
+    /** Called when the model's turn is complete (finished speaking) */
+    var onTurnComplete: (() -> Unit)? = null
+
     /**
      * Connects to ws://backend/ws/{session_id}
      */
@@ -186,6 +189,14 @@ class LiveRepository {
                             }
                         }
                     }
+                }
+            }
+
+            // 4. Turn complete detection
+            if (element.has("serverContent")) {
+                val serverContent = element.getAsJsonObject("serverContent")
+                if (serverContent.has("turnComplete") && serverContent.get("turnComplete").asBoolean) {
+                    onTurnComplete?.invoke()
                 }
             }
 

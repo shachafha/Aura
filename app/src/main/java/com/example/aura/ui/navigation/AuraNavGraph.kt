@@ -6,6 +6,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
 import com.example.aura.ui.live.LiveStylistScreen
 import com.example.aura.ui.live.LiveStylistViewModel
 import com.example.aura.ui.live.TranscriptSheet
@@ -18,7 +19,8 @@ import com.example.aura.ui.live.TranscriptSheet
  */
 @Composable
 fun AuraNavGraph() {
-    val viewModel = remember { LiveStylistViewModel() }
+    val context = LocalContext.current
+    val viewModel = remember { LiveStylistViewModel(context) }
     val messages by viewModel.chatMessages.collectAsState()
 
     // Bottom sheet state
