@@ -1,6 +1,7 @@
 package com.example.aura.data.live
 
 import android.util.Base64
+import android.util.Log
 import com.example.aura.BuildConfig
 import com.example.aura.data.model.ChatMessage
 import com.example.aura.data.model.MessageRole
@@ -56,6 +57,10 @@ class LiveRepository {
     var onAudioReceived: ((ByteArray) -> Unit)? = null
     var onTurnComplete: (() -> Unit)? = null
 
+    companion object {
+        private const val TAG = "LiveRepository"
+    }
+
     /**
      * Connects to ws://backend/ws/{session_id}
      * Call this early (on app launch) for instant readiness.
@@ -68,21 +73,27 @@ class LiveRepository {
         val request = Request.Builder()
             .url(wsUrl)
             .build()
+            
+        Log.d(TAG, "Attempting connection to WS URL: $wsUrl")
 
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
+                Log.d(TAG, "✅ WebSocket Connected!")
                 _isConnected.value = true
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
+                // Log.d(TAG, "↓ Received message (len=${text.length})")
                 handleServerMessage(text)
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                Log.d(TAG, "❌ WebSocket Closed: $reason")
                 _isConnected.value = false
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                Log.e(TAG, "❌ WebSocket Failure: ${t.message}", t)
                 _isConnected.value = false
                 // Auto-reconnect after 2 seconds
                 t.printStackTrace()
@@ -122,6 +133,23 @@ class LiveRepository {
     }
 
     /**
+     * Send base64 camera frame + text prompt as a SINGLE JSON message.
+     * The backend bundles them into one Content so Gemini sees the image with the question.
+     */
+    fun sendImageWithText(base64Jpeg: String, prompt: String) {
+        if (_isConnected.value) {
+            val json = JsonObject().apply {
+                addProperty("type", "image_with_text")
+                addProperty("data", base64Jpeg)
+                addProperty("mimeType", "image/jpeg")
+                addProperty("text", prompt)
+            }
+            webSocket?.send(json.toString())
+            Log.d("LiveRepository", "📸 Sent image+text (${base64Jpeg.length} base64 chars)")
+        }
+    }
+
+    /**
      * Send a standard text message.
      */
     fun sendText(text: String) {
@@ -148,83 +176,82 @@ class LiveRepository {
         try {
             val element = gson.fromJson(jsonString, JsonObject::class.java)
 
-            // 1. Audio output from AI
-            if (element.has("serverContent")) {
-                val sc = element.getAsJsonObject("serverContent")
-                if (sc.has("modelTurn")) {
-                    val modelTurn = sc.getAsJsonObject("modelTurn")
-                    if (modelTurn.has("parts")) {
-                        for (partItem in modelTurn.getAsJsonArray("parts")) {
-                            val part = partItem.asJsonObject
-                            if (part.has("inlineData")) {
-                                val inlineData = part.getAsJsonObject("inlineData")
-                                if (inlineData.get("mimeType").asString.startsWith("audio/pcm")) {
-                                    val audioBase64 = inlineData.get("data").asString
-                                    val pcmBytes = Base64.decode(audioBase64, Base64.DEFAULT)
-                                    onAudioReceived?.invoke(pcmBytes)
-                                }
+            // 1. Audio and Text output from AI
+            if (element.has("content")) {
+                val content = element.getAsJsonObject("content")
+                if (content.has("parts")) {
+                    for (partItem in content.getAsJsonArray("parts")) {
+                        val part = partItem.asJsonObject
+                        
+                        // Audio PCM data
+                        if (part.has("inlineData")) {
+                            val inlineData = part.getAsJsonObject("inlineData")
+                            if (inlineData.has("mimeType") && inlineData.get("mimeType").asString.startsWith("audio/pcm")) {
+                                val audioBase64 = inlineData.get("data").asString
+                                val pcmBytes = Base64.decode(audioBase64, Base64.URL_SAFE)
+                                onAudioReceived?.invoke(pcmBytes)
                             }
-                            // AI text response
-                            if (part.has("text")) {
-                                val text = part.get("text").asString
-                                if (text.isNotBlank()) {
-                                    val aiMsg = ChatMessage(role = MessageRole.ASSISTANT, content = text)
-                                    _chatMessages.value = _chatMessages.value + aiMsg
-                                    _partialText.value = text
-                                }
+                        }
+                        
+                        // Text message block
+                        if (part.has("text")) {
+                            val text = part.get("text").asString
+                            if (text.isNotBlank()) {
+                                val aiMsg = ChatMessage(role = MessageRole.ASSISTANT, content = text)
+                                _chatMessages.value = _chatMessages.value + aiMsg
+                                _partialText.value = text
                             }
                         }
                     }
                 }
-
-                // Turn complete
-                if (sc.has("turnComplete") && sc.get("turnComplete").asBoolean) {
-                    onTurnComplete?.invoke()
-                }
             }
 
-            // 2. Input audio transcription (what the USER said — shown live)
-            if (element.has("inputAudioTranscription") || element.has("input_audio_transcription")) {
-                val transcription = element.getAsJsonObject(
-                    if (element.has("inputAudioTranscription")) "inputAudioTranscription"
-                    else "input_audio_transcription"
-                )
-                val transcript = transcription?.get("transcript")?.asString
-                    ?: transcription?.get("final_transcript")?.asString
-                    ?: ""
-                if (transcript.isNotBlank()) {
-                    _userTranscription.value = transcript
-                    val userMsg = ChatMessage(role = MessageRole.USER, content = transcript)
-                    _chatMessages.value = _chatMessages.value + userMsg
-                }
-            }
-
-            // 3. Output audio transcription (what AURA said — shown live)
-            if (element.has("outputAudioTranscription") || element.has("output_audio_transcription")) {
-                val transcription = element.getAsJsonObject(
-                    if (element.has("outputAudioTranscription")) "outputAudioTranscription"
-                    else "output_audio_transcription"
-                )
-                val transcript = transcription?.get("transcript")?.asString
-                    ?: transcription?.get("final_transcript")?.asString
+            // 2. Output Audio Transcription (live typing out of Aura's voice)
+            val outTrans = element.getAsJsonObject("outputTranscription")
+                ?: element.getAsJsonObject("output_transcription")
+            if (outTrans != null) {
+                val transcript = outTrans.get("text")?.asString
+                    ?: outTrans.get("transcript")?.asString
+                    ?: outTrans.get("final_transcript")?.asString
                     ?: ""
                 if (transcript.isNotBlank()) {
                     _partialText.value = transcript
                 }
             }
 
-            // 4. User voice transcription (clientContent format)
-            if (element.has("clientContent") && element.getAsJsonObject("clientContent").has("turns")) {
-                val turns = element.getAsJsonObject("clientContent").getAsJsonArray("turns")
-                for (turnItem in turns) {
-                    val turn = turnItem.asJsonObject
-                    if (turn.get("role").asString == "user" && turn.has("parts")) {
-                        for (partItem in turn.getAsJsonArray("parts")) {
-                            val part = partItem.asJsonObject
-                            if (part.has("text")) {
-                                val text = part.get("text").asString
-                                if (text.isNotBlank()) {
-                                    _userTranscription.value = text
+            // 3. Input Audio Transcription (live typing out of User's voice)
+            val inTrans = element.getAsJsonObject("inputTranscription")
+                ?: element.getAsJsonObject("input_transcription")
+            if (inTrans != null) {
+                val transcript = inTrans.get("text")?.asString
+                    ?: inTrans.get("transcript")?.asString
+                    ?: inTrans.get("final_transcript")?.asString
+                    ?: ""
+                if (transcript.isNotBlank()) {
+                    _userTranscription.value = transcript
+                    
+                    // Note: In ADK, input transcriptions stream continuously.
+                    // We only want to add it to history when the turn completes, or if it's final.
+                    // But for now, just show it on the top screen.
+                }
+            }
+
+            // 4. Client Content (User's complete text block sent back)
+            if (element.has("clientContent")) {
+                val cc = element.getAsJsonObject("clientContent")
+                if (cc.has("turns")) {
+                    for (turnItem in cc.getAsJsonArray("turns")) {
+                        val turn = turnItem.asJsonObject
+                        if (turn.get("role").asString == "user" && turn.has("parts")) {
+                            for (partItem in turn.getAsJsonArray("parts")) {
+                                val part = partItem.asJsonObject
+                                if (part.has("text")) {
+                                    val text = part.get("text").asString
+                                    if (text.isNotBlank()) {
+                                        _userTranscription.value = text
+                                        // Save final user text to history only once it's recognized as clientContent
+                                        // But to prevent duplicates, rely on the ViewModel
+                                    }
                                 }
                             }
                         }
@@ -232,8 +259,16 @@ class LiveRepository {
                 }
             }
 
+            // 5. Turn Complete
+            if (element.has("turnComplete") && element.get("turnComplete").asBoolean) {
+                onTurnComplete?.invoke()
+            }
+            if (element.has("turn_complete") && element.get("turn_complete").asBoolean) {
+                onTurnComplete?.invoke()
+            }
+
         } catch (e: Exception) {
-            e.printStackTrace()
+            Log.e(TAG, "Failed to parse ADK Event: ${e.message}", e)
         }
     }
 }

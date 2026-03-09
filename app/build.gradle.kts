@@ -17,7 +17,7 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         // Backend URL — update after Cloud Run deployment
-        buildConfigField("String", "BACKEND_URL", "\"http://10.206.22.111:8080/\"")
+        buildConfigField("String", "BACKEND_URL", "\"http://localhost:8080/\"")
 
         // Mock mode — set to false when backend + API keys are ready
         buildConfigField("boolean", "USE_MOCK", "false")

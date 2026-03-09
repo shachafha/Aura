@@ -128,16 +128,36 @@ async def run_agent(user_id: str, session_id: str, message: str, image_bytes: by
 
     content = types.Content(role="user", parts=parts)
 
-    response_text = ""
-    async for event in runner.run_async(
+    session = await session_service.get_session(
+        app_name=APP_NAME,
         user_id=user_id,
-        session_id=session_id,
-        new_message=content,
-    ):
-        if event.is_final_response():
-            for part in event.content.parts:
-                if part.text:
-                    response_text += part.text
+        session_id=session_id
+    )
+    if not session:
+        await session_service.create_session(
+            app_name=APP_NAME,
+            user_id=user_id,
+            session_id=session_id
+        )
+
+    response_text = ""
+    logger.info(f"Running agent for user={user_id}, session={session_id}. Prompt parts: {len(parts)}")
+    
+    try:
+        async for event in runner.run_async(
+            user_id=user_id,
+            session_id=session_id,
+            new_message=content,
+        ):
+            if event.is_final_response():
+                for part in event.content.parts:
+                    if part.text:
+                        response_text += part.text
+                        
+        logger.info(f"Agent finished. Response length: {len(response_text)} characters.")
+    except Exception as e:
+        logger.error(f"Error during run_agent execution: {e}", exc_info=True)
+        raise
 
     return response_text
 
@@ -173,8 +193,12 @@ async def analyze_outfit(request: AnalyzeRequest):
     Analyze an outfit image. Optionally includes weather context.
     """
     try:
+        logger.info(f"--- POST /analyze received ---")
+        logger.info(f"Location coordinates: ({request.lat}, {request.lon})")
         image_bytes = base64.b64decode(request.image_base64)
-    except Exception:
+        logger.info(f"Decoded image: {len(image_bytes)} bytes")
+    except Exception as e:
+        logger.error(f"Image decode failed: {e}")
         raise HTTPException(status_code=400, detail="Invalid base64 image")
 
     user_id = f"user_{uuid.uuid4().hex[:8]}"
@@ -237,12 +261,14 @@ async def analyze_outfit(request: AnalyzeRequest):
                 styling_note=w.get("styling_note", "")
             )
 
+        logger.info(f"Analyze successful. Overall style: {outfit.overall_style}")
         return AnalyzeResponse(
             outfit_analysis=outfit,
             weather=weather,
             greeting=data.get("greeting", outfit.summary)
         )
-    except (json.JSONDecodeError, Exception):
+    except (json.JSONDecodeError, Exception) as e:
+        logger.warning(f"Failed to parse JSON response cleanly: {e}. Falling back to raw text.")
         # Fallback: return raw text as summary
         return AnalyzeResponse(
             outfit_analysis=OutfitAnalysisResult(summary=response_text[:500]),
@@ -255,6 +281,7 @@ async def chat(request: ChatRequest):
     """
     Send a message to the Aura stylist. Maintains conversation context.
     """
+    logger.info(f"--- POST /chat received: '{request.message}' ---")
     user_id = f"user_{uuid.uuid4().hex[:8]}"
     session_id = f"session_{uuid.uuid4().hex[:8]}"
 
@@ -320,6 +347,8 @@ async def chat(request: ChatRequest):
     # Clean message text
     clean_message = re.sub(r"<recommendations>.*?</recommendations>", "", response_text, flags=re.DOTALL).strip()
 
+    logger.info(f"Chat response generated: {len(clean_message)} chars. Found {len(recommendations)} recommendations.")
+    
     return ChatResponse(
         message=clean_message,
         recommendations=recommendations
@@ -447,17 +476,25 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str) -> None:
                         live_request_queue.send_realtime(audio_blob)
                         logger.debug(f"↑ Audio JSON: {len(audio_data)} bytes")
 
-                    elif msg_type == "image":
+                    elif msg_type == "image" or msg_type == "image_with_text":
                         image_data = base64.b64decode(
                             json_message.get("data", "")
                         )
                         mime_type = json_message.get("mimeType", "image/jpeg")
-                        image_blob = types.Blob(
-                            mime_type=mime_type,
-                            data=image_data,
-                        )
-                        live_request_queue.send_realtime(image_blob)
-                        logger.info(f"↑ Image: {len(image_data)} bytes")
+                        prompt_text = json_message.get("text", "Please analyze this photo and describe what you see.")
+                        
+                        # Bundle image + text into ONE Content so Gemini
+                        # associates the image with the analysis request
+                        parts = [
+                            types.Part.from_bytes(
+                                data=image_data,
+                                mime_type=mime_type,
+                            ),
+                            types.Part(text=prompt_text),
+                        ]
+                        image_content = types.Content(parts=parts)
+                        live_request_queue.send_content(image_content)
+                        logger.info(f"↑ Image+Text sent as content: {len(image_data)} bytes, prompt='{prompt_text[:60]}...'")
 
                     else:
                         logger.warning(f"↑ Unknown type: {msg_type}")

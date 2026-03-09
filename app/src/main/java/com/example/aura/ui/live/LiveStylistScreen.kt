@@ -110,10 +110,12 @@ fun LiveStylistScreen(
     // Track camera flip to force rebind
     var cameraFlipKey by remember { mutableIntStateOf(0) }
 
-    // ─── Voice-triggered photo capture ──────────────────
+    // ─── Voice-triggered photo capture + Gemini analysis ──────────────────
     LaunchedEffect(captureTrigger) {
         if (captureTrigger > 0) {
-            Log.d("AuraDemo", "📸 captureTrigger=$captureTrigger → taking photo")
+            Log.d("AuraDemo", "📸 captureTrigger=$captureTrigger → capturing + analyzing")
+
+            // 1. Save to gallery
             val contentValues = ContentValues().apply {
                 put(MediaStore.MediaColumns.DISPLAY_NAME,
                     "Aura_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}")
@@ -134,7 +136,33 @@ fun LiveStylistScreen(
                 ContextCompat.getMainExecutor(context),
                 object : ImageCapture.OnImageSavedCallback {
                     override fun onImageSaved(output: ImageCapture.OutputFileResults) {
-                        Toast.makeText(context, "📸 Photo saved!", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "📸 Analyzing your look...", Toast.LENGTH_SHORT).show()
+
+                        // Read the saved image back and send to Gemini for analysis
+                        try {
+                            val savedUri = output.savedUri
+                            if (savedUri != null) {
+                                val inputStream = context.contentResolver.openInputStream(savedUri)
+                                val bitmap = android.graphics.BitmapFactory.decodeStream(inputStream)
+                                inputStream?.close()
+
+                                if (bitmap != null) {
+                                    val stream = java.io.ByteArrayOutputStream()
+                                    bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 75, stream)
+                                    val base64 = android.util.Base64.encodeToString(stream.toByteArray(), android.util.Base64.NO_WRAP)
+
+                                    // Send image + analysis prompt bundled together to Gemini
+                                    viewModel.sendCameraFrameWithPrompt(
+                                        base64,
+                                        "I just shared a photo of myself. Please analyze my outfit, tell me what you see, and give me styling advice!"
+                                    )
+                                    Log.d("AuraDemo", "📸 Photo sent to Gemini for analysis (${stream.size()} bytes)")
+                                    bitmap.recycle()
+                                }
+                            }
+                        } catch (e: Exception) {
+                            Log.e("AuraDemo", "Failed to send photo to Gemini: ${e.message}", e)
+                        }
                     }
                     override fun onError(exc: ImageCaptureException) {
                         Log.e("AuraDemo", "Photo capture failed: ${exc.message}")

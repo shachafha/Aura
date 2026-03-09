@@ -237,10 +237,10 @@ Always structure your analysis:
 
 root_agent = Agent(
     name="aura_stylist",
-    model="gemini-2.0-flash",
+    model="gemini-2.5-flash",
     description="Aura — AI Fashion Stylist for Women. Analyzes outfits, gives weather-aware styling advice, and recommends real products.",
     instruction=AURA_SYSTEM_INSTRUCTION,
-    tools=AURA_TOOLS,
+    tools=AURA_TOOLS[:-1], # Exclude google_search for Gemini 1.5 compatibility
 )
 
 
